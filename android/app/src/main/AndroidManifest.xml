@@ -35,7 +35,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
-        android:label="AutoCall Syncer"
+        android:label="AutoCall"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:requestLegacyExternalStorage="true"

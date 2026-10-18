@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import 'call_queue_provider.dart';
 import 'models/call_item.dart';
 import 'widgets/audio_player_sheet.dart';
@@ -37,7 +38,8 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final provider = context.watch<CallQueueProvider>();
     final theme = Theme.of(context);
-    final allSystemsReady = provider.permissionsStatus['ALL_GRANTED'] == true &&
+    final allSystemsReady =
+        provider.permissionsStatus['ALL_GRANTED'] == true &&
         provider.isAccessibilityEnabled &&
         provider.canDrawOverlays;
 
@@ -47,11 +49,11 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'AutoCall & Syncer',
+              'AutoCall',
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
             ),
             Text(
-              'Vivo / Samsung / Xiaomi OEM Mode',
+              'Easy Call Center',
               style: TextStyle(
                 fontSize: 11,
                 color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
@@ -66,7 +68,10 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                 ? const SizedBox(
                     width: 20,
                     height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
                   )
                 : const Icon(Icons.cloud_download),
             onPressed: provider.isLoadingContactsFromApi
@@ -107,7 +112,8 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           _buildMetricsOverview(context, provider),
 
           // 4. Active Call Timeout Banner (Auto Hangup jika tidak angkat/sibuk)
-          if (provider.isCallTimerRunning && provider.currentProcessingId != null)
+          if (provider.isCallTimerRunning &&
+              provider.currentProcessingId != null)
             _buildCallTimeoutBanner(context, provider),
 
           // 4. Cooldown / Active Call Status Banner
@@ -124,7 +130,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                 ? _buildEmptyState(context, provider)
                 : ListView.separated(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 12),
+                      horizontal: 14,
+                      vertical: 12,
+                    ),
                     itemCount: provider.queue.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 10),
                     itemBuilder: (context, index) {
@@ -145,21 +153,44 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
 
   // =================== METRICS OVERVIEW ===================
   Widget _buildMetricsOverview(
-      BuildContext context, CallQueueProvider provider) {
+    BuildContext context,
+    CallQueueProvider provider,
+  ) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+      color: Theme.of(context).colorScheme.surfaceContainerHighest
+          .withValues(alpha: 0.3),
       child: Row(
         children: [
-          _buildMetricTile('Total', provider.totalCount.toString(), Colors.blueGrey),
+          _buildMetricTile(
+            'Total',
+            provider.totalCount.toString(),
+            Colors.blueGrey,
+          ),
           const SizedBox(width: 8),
-          _buildMetricTile('Pending', provider.pendingCount.toString(), Colors.blue),
+          _buildMetricTile(
+            'Pending',
+            provider.pendingCount.toString(),
+            Colors.blue,
+          ),
           const SizedBox(width: 8),
-          _buildMetricTile('Sukses', provider.completedCount.toString(), Colors.green),
+          _buildMetricTile(
+            'Sukses',
+            provider.completedCount.toString(),
+            Colors.green,
+          ),
           const SizedBox(width: 8),
-          _buildMetricTile('Gagal/Sibuk', provider.failedCount.toString(), Colors.redAccent),
+          _buildMetricTile(
+            'Gagal/Sibuk',
+            provider.failedCount.toString(),
+            Colors.redAccent,
+          ),
           const SizedBox(width: 8),
-          _buildMetricTile('Uploaded', provider.uploadedCount.toString(), Colors.teal),
+          _buildMetricTile(
+            'Uploaded',
+            provider.uploadedCount.toString(),
+            Colors.teal,
+          ),
         ],
       ),
     );
@@ -202,8 +233,12 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   }
 
   // =================== COOLDOWN BANNER ===================
-  Widget _buildCooldownBanner(BuildContext context, CallQueueProvider provider) {
-    final progress = provider.cooldownSecondsRemaining / provider.cooldownTotalSeconds;
+  Widget _buildCooldownBanner(
+    BuildContext context,
+    CallQueueProvider provider,
+  ) {
+    final progress =
+        provider.cooldownSecondsRemaining / provider.cooldownTotalSeconds;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -221,7 +256,10 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
               Expanded(
                 child: Text(
                   'Jeda aman antar panggilan: ${provider.cooldownSecondsRemaining} detik...',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
                 ),
               ),
               TextButton.icon(
@@ -247,7 +285,10 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   }
 
   // =================== CONTROL TOOLBAR ===================
-  Widget _buildControlToolbar(BuildContext context, CallQueueProvider provider) {
+  Widget _buildControlToolbar(
+    BuildContext context,
+    CallQueueProvider provider,
+  ) {
     final isRunning = provider.isQueueRunning;
     final isPaused = provider.isPaused;
 
@@ -425,7 +466,11 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                 _buildCallStatusChip(item.status),
                 if (isProcessing && provider.isCallTimerRunning)
                   Chip(
-                    avatar: const Icon(Icons.timer, size: 14, color: Colors.red),
+                    avatar: const Icon(
+                      Icons.timer,
+                      size: 14,
+                      color: Colors.red,
+                    ),
                     label: Text(
                       'Timeout: ${provider.callTimeoutRemaining}s',
                       style: const TextStyle(
@@ -462,7 +507,8 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
             _buildUploadStatusRow(item),
 
             // Audio Player Button if recording exists or call was completed
-            if (item.recordingFilePath != null && item.recordingFilePath!.isNotEmpty) ...[
+            if (item.recordingFilePath != null &&
+                item.recordingFilePath!.isNotEmpty) ...[
               const SizedBox(height: 8),
               SizedBox(
                 width: double.infinity,
@@ -517,13 +563,15 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (item.id == provider.currentProcessingId && provider.isCallTimerRunning)
+        if (item.id == provider.currentProcessingId &&
+            provider.isCallTimerRunning)
           IconButton(
             icon: const Icon(Icons.call_end, size: 22, color: Colors.red),
             tooltip: 'Tutup Panggilan Sekarang',
             onPressed: () => provider.hangupCurrentCall(),
           )
-        else if (item.status != CallStatus.dialing && item.status != CallStatus.inCall)
+        else if (item.status != CallStatus.dialing &&
+            item.status != CallStatus.inCall)
           IconButton(
             icon: const Icon(Icons.phone, size: 20, color: Colors.green),
             tooltip: 'Panggil Manual',
@@ -719,7 +767,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
 
   // =================== WARNING & DIALOGS ===================
   Widget _buildPermissionWarningBanner(
-      BuildContext context, CallQueueProvider provider) {
+    BuildContext context,
+    CallQueueProvider provider,
+  ) {
     return MaterialBanner(
       backgroundColor: Colors.amber.shade50,
       leading: const Icon(Icons.warning_amber_rounded, color: Colors.amber),
@@ -737,7 +787,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildAccessibilityWarningBanner(
-      BuildContext context, CallQueueProvider provider) {
+    BuildContext context,
+    CallQueueProvider provider,
+  ) {
     if (!provider.isAccessibilityEnabled) {
       return MaterialBanner(
         backgroundColor: Colors.deepOrange.shade50,
@@ -766,7 +818,10 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
     } else if (!provider.canDrawOverlays) {
       return MaterialBanner(
         backgroundColor: Colors.blue.shade50,
-        leading: Icon(Icons.picture_in_picture_alt, color: Colors.blue.shade700),
+        leading: Icon(
+          Icons.picture_in_picture_alt,
+          color: Colors.blue.shade700,
+        ),
         content: Text(
           'Izin Floating Widget Belum Aktif: Izinkan AutoCall menampilkan widget hitung mundur melayang di atas layar telepon Vivo.',
           style: TextStyle(
@@ -837,7 +892,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
     final singlePhoneController = TextEditingController();
     final singleNameController = TextEditingController();
     final batchController = TextEditingController();
-    final apiFetchUrlController = TextEditingController(text: provider.contactsApiUrl);
+    final apiFetchUrlController = TextEditingController(
+      text: provider.contactsApiUrl,
+    );
     bool clearExistingQueue = false;
     bool isFetchingApi = false;
 
@@ -864,7 +921,10 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                   children: [
                     const Text(
                       'Tambah Nomor ke Antrean',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     const SizedBox(height: 12),
                     const TabBar(
@@ -872,8 +932,14 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                       tabAlignment: TabAlignment.center,
                       tabs: [
                         Tab(icon: Icon(Icons.person_add), text: 'Satu Nomor'),
-                        Tab(icon: Icon(Icons.playlist_add), text: 'Batch / Paste'),
-                        Tab(icon: Icon(Icons.cloud_download), text: 'Tarik API Database'),
+                        Tab(
+                          icon: Icon(Icons.playlist_add),
+                          text: 'Batch / Paste',
+                        ),
+                        Tab(
+                          icon: Icon(Icons.cloud_download),
+                          text: 'Tarik API Database',
+                        ),
                       ],
                     ),
                     const SizedBox(height: 16),
@@ -908,11 +974,14 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                                 ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(
                                     minimumSize: const Size.fromHeight(48),
-                                    backgroundColor: Theme.of(context).primaryColor,
+                                    backgroundColor: Theme.of(context)
+                                        .primaryColor,
                                     foregroundColor: Colors.white,
                                   ),
                                   onPressed: () {
-                                    if (singlePhoneController.text.trim().isNotEmpty) {
+                                    if (singlePhoneController.text
+                                        .trim()
+                                        .isNotEmpty) {
                                       provider.addNumber(
                                         singlePhoneController.text.trim(),
                                         singleNameController.text.trim(),
@@ -935,8 +1004,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                                   maxLines: 5,
                                   keyboardType: TextInputType.multiline,
                                   decoration: const InputDecoration(
-                                    hintText:
-                                        'Paste nomor disini (satu nomor per baris):\n081234567890\n085712345678, Budi\n081998877665, Siti',
+                                    hintText: 'Paste nomor disini (satu nomor per baris):\n081234567890\n085712345678, Budi\n081998877665, Siti',
                                     border: OutlineInputBorder(),
                                   ),
                                 ),
@@ -944,12 +1012,17 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                                 ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(
                                     minimumSize: const Size.fromHeight(48),
-                                    backgroundColor: Theme.of(context).primaryColor,
+                                    backgroundColor: Theme.of(context)
+                                        .primaryColor,
                                     foregroundColor: Colors.white,
                                   ),
                                   onPressed: () {
-                                    if (batchController.text.trim().isNotEmpty) {
-                                      final lines = batchController.text.split('\n');
+                                    if (batchController.text
+                                        .trim()
+                                        .isNotEmpty) {
+                                      final lines = batchController.text.split(
+                                        '\n',
+                                      );
                                       provider.addBatchNumbers(lines);
                                     }
                                     Navigator.pop(ctx);
@@ -969,11 +1042,15 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                                   controller: apiFetchUrlController,
                                   decoration: InputDecoration(
                                     labelText: 'URL API Database Kontak',
-                                    hintText: 'https://domain.com/api/v1/contacts',
-                                    prefixIcon: const Icon(Icons.cloud_download),
+                                    hintText:
+                                        'https://domain.com/api/v1/contacts',
+                                    prefixIcon: const Icon(
+                                      Icons.cloud_download,
+                                    ),
                                     suffixIcon: IconButton(
                                       icon: const Icon(Icons.clear),
-                                      onPressed: () => apiFetchUrlController.clear(),
+                                      onPressed: () =>
+                                          apiFetchUrlController.clear(),
                                     ),
                                     border: const OutlineInputBorder(),
                                   ),
@@ -1003,37 +1080,59 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                                   onPressed: isFetchingApi
                                       ? null
                                       : () async {
-                                          final url = apiFetchUrlController.text.trim();
+                                          final url = apiFetchUrlController.text
+                                              .trim();
                                           if (url.isEmpty) {
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              const SnackBar(content: Text('Harap masukkan URL API database')),
-                                            );
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                                  const SnackBar(
+                                                    content: Text(
+                                                      'Harap masukkan URL API database',
+                                                    ),
+                                                  ),
+                                                );
                                             return;
                                           }
-                                          setModalState(() => isFetchingApi = true);
+                                          setModalState(
+                                            () => isFetchingApi = true,
+                                          );
                                           try {
-                                            await provider.setContactsApiUrl(url);
-                                            final count = await provider.fetchContactsFromApi(
-                                              overrideUrl: url,
-                                              clearExisting: clearExistingQueue,
+                                            await provider.setContactsApiUrl(
+                                              url,
                                             );
+                                            final count = await provider
+                                                .fetchContactsFromApi(
+                                                  overrideUrl: url,
+                                                  clearExisting:
+                                                      clearExistingQueue,
+                                                );
                                             if (ctx.mounted) {
                                               Navigator.pop(ctx);
                                             }
                                             if (context.mounted) {
-                                              ScaffoldMessenger.of(context).showSnackBar(
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
                                                 SnackBar(
-                                                  content: Text('Berhasil memuat $count kontak dari API!'),
+                                                  content: Text(
+                                                    'Berhasil memuat $count kontak dari API!',
+                                                  ),
                                                   backgroundColor: Colors.green,
                                                 ),
                                               );
                                             }
                                           } catch (e) {
-                                            setModalState(() => isFetchingApi = false);
+                                            setModalState(
+                                              () => isFetchingApi = false,
+                                            );
                                             if (context.mounted) {
-                                              ScaffoldMessenger.of(context).showSnackBar(
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
                                                 SnackBar(
-                                                  content: Text('Gagal menarik kontak: $e'),
+                                                  content: Text(
+                                                    'Gagal menarik kontak: $e',
+                                                  ),
                                                   backgroundColor: Colors.red,
                                                 ),
                                               );
@@ -1073,7 +1172,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   }
 
   void _showPermissionsDialog(
-      BuildContext context, CallQueueProvider provider) {
+    BuildContext context,
+    CallQueueProvider provider,
+  ) {
     showDialog(
       context: context,
       builder: (ctx) {
@@ -1170,14 +1271,19 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
       trailing: !isGranted
           ? OutlinedButton(
               onPressed: onGrant,
-              style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+              style: OutlinedButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+              ),
               child: const Text('Izinkan'),
             )
           : null,
     );
   }
 
-  void _showAccessibilityModal(BuildContext context, CallQueueProvider provider) {
+  void _showAccessibilityModal(
+    BuildContext context,
+    CallQueueProvider provider,
+  ) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1206,11 +1312,23 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
               child: const Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Langkah Mudah di Pengaturan Vivo:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                  Text(
+                    'Langkah Mudah di Pengaturan Vivo:',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
                   SizedBox(height: 6),
-                  Text('1. Ketuk tombol "Buka Pengaturan Aksesibilitas" di bawah.', style: TextStyle(fontSize: 12)),
-                  Text('2. Pilih "Aplikasi yang didownload" (Downloaded apps).', style: TextStyle(fontSize: 12)),
-                  Text('3. Pilih "AutoCall Syncer", lalu nyalakan sakelar "Gunakan AutoCall Syncer".', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                  Text(
+                    '1. Ketuk tombol "Buka Pengaturan Aksesibilitas" di bawah.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  Text(
+                    '2. Pilih "Aplikasi yang didownload" (Downloaded apps).',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  Text(
+                    '3. Pilih "AutoCall", lalu nyalakan sakelarnya.',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
                 ],
               ),
             ),
@@ -1242,7 +1360,11 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        icon: const Icon(Icons.picture_in_picture_alt, size: 48, color: Colors.blue),
+        icon: const Icon(
+          Icons.picture_in_picture_alt,
+          size: 48,
+          color: Colors.blue,
+        ),
         title: const Text(
           'Izin Tampilan di Atas Aplikasi',
           textAlign: TextAlign.center,
@@ -1274,9 +1396,12 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   }
 
   void _showSettingsDialog(BuildContext context, CallQueueProvider provider) {
-    final uploadUrlController = TextEditingController(text: provider.backendUrl);
-    final contactsUrlController =
-        TextEditingController(text: provider.contactsApiUrl);
+    final uploadUrlController = TextEditingController(
+      text: provider.backendUrl,
+    );
+    final contactsUrlController = TextEditingController(
+      text: provider.contactsApiUrl,
+    );
     int currentDelay = provider.cooldownTotalSeconds;
     int currentTimeout = provider.callTimeoutSeconds;
 
@@ -1341,7 +1466,10 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     Center(
                       child: Text(
                         '$currentDelay detik (Rekomendasi OEM: 5-8s)',
-                        style: const TextStyle(fontSize: 12, color: Colors.blue),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.blue,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 16),
@@ -1376,7 +1504,8 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     TextField(
                       controller: uploadUrlController,
                       decoration: const InputDecoration(
-                        hintText: 'https://backend.com/api/v1/recordings/upload',
+                        hintText:
+                            'https://backend.com/api/v1/recordings/upload',
                         prefixIcon: Icon(Icons.cloud_upload),
                         border: OutlineInputBorder(),
                       ),
@@ -1394,7 +1523,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     provider.setCallTimeoutSeconds(currentTimeout);
                     provider.setCooldownSeconds(currentDelay);
                     provider.setBackendUrl(uploadUrlController.text.trim());
-                    provider.setContactsApiUrl(contactsUrlController.text.trim());
+                    provider.setContactsApiUrl(
+                      contactsUrlController.text.trim(),
+                    );
                     Navigator.pop(ctx);
                   },
                   child: const Text('Simpan'),
@@ -1440,7 +1571,10 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
             SizedBox(
               width: 16,
               height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
             ),
             SizedBox(width: 12),
             Text('Menghubungi API database kontak...'),
@@ -1563,7 +1697,10 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   }
 
   /// Banner indikator panggilan aktif dengan hitung mundur timeout auto-hangup
-  Widget _buildCallTimeoutBanner(BuildContext context, CallQueueProvider provider) {
+  Widget _buildCallTimeoutBanner(
+    BuildContext context,
+    CallQueueProvider provider,
+  ) {
     final activeItem = provider.queue.firstWhere(
       (item) => item.id == provider.currentProcessingId,
       orElse: () => provider.queue.first,
@@ -1601,7 +1738,8 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     children: [
                       const TextSpan(text: 'Sedang Memanggil: '),
                       TextSpan(
-                        text: '${activeItem.name.isNotEmpty ? activeItem.name : activeItem.phoneNumber} (${activeItem.phoneNumber})',
+                        text:
+                            '${activeItem.name.isNotEmpty ? activeItem.name : activeItem.phoneNumber} (${activeItem.phoneNumber})',
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                     ],
@@ -1650,10 +1788,16 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                   visualDensity: VisualDensity.compact,
                   foregroundColor: Colors.red.shade700,
                   side: BorderSide(color: Colors.red.shade400),
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
                 ),
                 icon: const Icon(Icons.call_end, size: 14),
-                label: const Text('Tutup Sekarang', style: TextStyle(fontSize: 11)),
+                label: const Text(
+                  'Tutup Sekarang',
+                  style: TextStyle(fontSize: 11),
+                ),
                 onPressed: () => provider.hangupCurrentCall(),
               ),
             ],

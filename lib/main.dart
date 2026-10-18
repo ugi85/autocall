@@ -16,7 +16,7 @@ class AutoCallApp extends StatelessWidget {
     return ChangeNotifierProvider(
       create: (_) => CallQueueProvider(),
       child: MaterialApp(
-        title: 'AutoCall Center & Recording Syncer',
+        title: 'AutoCall',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           useMaterial3: true,
