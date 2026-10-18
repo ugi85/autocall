@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AutoCall &amp; Syncer</string>
+    <string name="accessibility_service_name">AutoCall Assistant (Tutup Otomatis)</string>
+    <string name="accessibility_service_description">Layanan otomasi AutoCall untuk menutup panggilan telepon secara otomatis saat timeout / tidak diangkat tanpa intervensi manual pada HP Vivo.</string>
+</resources>
