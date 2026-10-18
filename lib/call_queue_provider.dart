@@ -148,6 +148,13 @@ class CallQueueProvider with ChangeNotifier {
         }
       }
 
+      // If backend upload URL is still placeholder, auto-link to contacts API URL
+      if ((_backendUrl.contains('your-api-domain.com') || _backendUrl.isEmpty) &&
+          _contactsApiUrl.isNotEmpty) {
+        _backendUrl = _contactsApiUrl;
+        await _nativeBridge.setBackendUrl(_contactsApiUrl);
+      }
+
       // Load queue
       final jsonString = prefs.getString(_keyQueue);
       if (jsonString != null && jsonString.isNotEmpty) {
@@ -294,7 +301,9 @@ class CallQueueProvider with ChangeNotifier {
           durationSeconds: duration,
           callTimestamp: callTimestamp,
           callType: callType,
-          recordingFilePath: recordingPath.isNotEmpty ? recordingPath : item.recordingFilePath,
+          recordingFilePath: isCallSuccess
+              ? (recordingPath.isNotEmpty ? recordingPath : item.recordingFilePath)
+              : null,
           uploadStatus: isCallSuccess
               ? (recordingPath.isNotEmpty ? UploadStatus.waitingRecording : UploadStatus.idle)
               : UploadStatus.idle,
@@ -303,6 +312,17 @@ class CallQueueProvider with ChangeNotifier {
               : 'Panggilan tidak terjawab / sibuk',
         );
       });
+
+      // If call was unanswered, busy, or failed, sync status directly to Spreadsheet
+      if (!isCallSuccess) {
+        final phone = _queue.firstWhere((e) => e.id == targetId).phoneNumber;
+        _syncCallStatusToSpreadsheet(
+          phoneNumber: phone,
+          statusText: duration > 0 ? 'GAGAL (${duration}s)' : 'TIDAK DIANGKAT / SIBUK',
+          duration: duration,
+        );
+      }
+
       // Also refresh the device recordings library
       fetchDeviceRecordings();
     }
@@ -697,8 +717,46 @@ class CallQueueProvider with ChangeNotifier {
   Future<void> setContactsApiUrl(String url) async {
     final clean = sanitizeApiUrl(url);
     _contactsApiUrl = clean;
+    if ((_backendUrl.contains('your-api-domain.com') || _backendUrl.isEmpty) && clean.isNotEmpty) {
+      _backendUrl = clean;
+      await _nativeBridge.setBackendUrl(clean);
+    }
     notifyListeners();
     _saveSettingsToStorage();
+  }
+
+  /// Sends call status update to Google Spreadsheet for unanswered / busy calls
+  Future<void> _syncCallStatusToSpreadsheet({
+    required String phoneNumber,
+    required String statusText,
+    required int duration,
+  }) async {
+    final targetUrl = _backendUrl.isNotEmpty && !_backendUrl.contains('your-api-domain.com')
+        ? _backendUrl
+        : _contactsApiUrl;
+
+    if (targetUrl.isEmpty || !targetUrl.startsWith('http')) return;
+
+    try {
+      final payload = jsonEncode({
+        'action': 'update_status',
+        'phone_number': phoneNumber,
+        'status': statusText,
+        'call_duration': duration,
+        'call_timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
+
+      await http.post(
+        Uri.parse(targetUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: payload,
+      ).timeout(const Duration(seconds: 10));
+    } catch (e) {
+      debugPrint('Failed to sync status to spreadsheet: $e');
+    }
   }
 
   /// Fetches contact list from external API database and loads them into the queue.

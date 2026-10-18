@@ -86,6 +86,7 @@ class CallManager(
 
     // Active call tracking
     private var activeTargetNumber: String? = null
+    private var activeTargetName: String? = null
     private var lastRecordedState: Int = TelephonyManager.CALL_STATE_IDLE
     private var wasOffhook: Boolean = false
     private var callInitiatedTimestamp: Long = 0L
@@ -240,6 +241,7 @@ class CallManager(
                 if (wasOffhook || activeTargetNumber != null) {
                     val targetNum = activeTargetNumber
                     wasOffhook = false
+                    activeTargetNumber = null
 
                     // Schedule retrieval of CallLog and start worker in IO scope
                     scope.launch {
@@ -269,6 +271,7 @@ class CallManager(
 
         val cleanNumber = phoneNumber.trim()
         activeTargetNumber = cleanNumber
+        activeTargetName = name.trim()
         callInitiatedTimestamp = System.currentTimeMillis()
         wasOffhook = false
 
@@ -469,9 +472,11 @@ class CallManager(
             "Call finished. Number: $finalNumber, Duration: ${duration}s, Status: $status, Type: $callType"
         )
 
+        val finalName = activeTargetName ?: ""
+
         // Immediate check for local recording file on internal storage (Vivo, Samsung, etc.)
         var localRecordingPath = ""
-        val localFile = RecordingSearchHelper.findMatchingRecordingFile(finalNumber, timestamp, duration)
+        val localFile = RecordingSearchHelper.findMatchingRecordingFile(finalNumber, finalName, timestamp, duration)
         if (localFile != null && localFile.exists()) {
             localRecordingPath = localFile.absolutePath
             Log.i(TAG, "Found local recording file immediately: $localRecordingPath")
@@ -481,6 +486,7 @@ class CallManager(
             mapOf(
                 "event" to "CALL_COMPLETED",
                 "phoneNumber" to finalNumber,
+                "name" to finalName,
                 "duration" to duration,
                 "timestamp" to timestamp,
                 "callType" to callType,
@@ -489,15 +495,16 @@ class CallManager(
             )
         )
 
-        // Reset active target
-        activeTargetNumber = null
-
         // If the call connected and had a duration, enqueue upload worker
         if (duration > 0L) {
-            enqueueUploadWorker(finalNumber, timestamp, duration, callType)
+            enqueueUploadWorker(finalNumber, finalName, timestamp, duration, callType)
         } else {
             Log.i(TAG, "Call duration was 0 (unanswered or busy). Skipping recording upload.")
         }
+
+        // Reset active target
+        activeTargetNumber = null
+        activeTargetName = null
     }
 
     /**
@@ -512,6 +519,7 @@ class CallManager(
      */
     private fun enqueueUploadWorker(
         phoneNumber: String,
+        contactName: String,
         timestamp: Long,
         duration: Long,
         callType: String
@@ -522,6 +530,7 @@ class CallManager(
 
         val inputData = workDataOf(
             UploadRecordingWorker.KEY_PHONE_NUMBER to phoneNumber,
+            UploadRecordingWorker.KEY_CONTACT_NAME to contactName,
             UploadRecordingWorker.KEY_CALL_TIMESTAMP to timestamp,
             UploadRecordingWorker.KEY_CALL_DURATION to duration,
             UploadRecordingWorker.KEY_CALL_TYPE to callType,

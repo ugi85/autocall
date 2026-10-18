@@ -56,14 +56,14 @@ void main() {
     expect(provider.queue[1].name, 'Alya');
     expect(provider.queue[1].phoneNumber, '089638833022');
 
-    expect(provider.queue[2].name, 'Byu');
-    expect(provider.queue[2].phoneNumber, '085157997349');
+    expect(provider.queue[2].name, 'Nenek');
+    expect(provider.queue[2].phoneNumber, '0895332270020');
 
-    expect(provider.queue[3].name, 'Nenek');
-    expect(provider.queue[3].phoneNumber, '0895332270020');
+    expect(provider.queue[3].name, 'Fitri');
+    expect(provider.queue[3].phoneNumber, '08986899669');
 
-    expect(provider.queue[4].name, 'Fitri');
-    expect(provider.queue[4].phoneNumber, '08986899669');
+    expect(provider.queue[4].name, 'Byu');
+    expect(provider.queue[4].phoneNumber, '085157997349');
 
 
   });

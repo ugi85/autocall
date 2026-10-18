@@ -49,10 +49,11 @@ object RecordingSearchHelper {
     }
 
     /**
-     * Matches a recording file based on phone number and timestamp proximity.
+     * Matches a recording file based on phone number, contact name, and timestamp.
      */
     fun findMatchingRecordingFile(
         phoneNumber: String,
+        contactName: String = "",
         callTimestamp: Long,
         callDuration: Long
     ): File? {
@@ -63,6 +64,7 @@ object RecordingSearchHelper {
 
         var bestMatch: File? = null
         var highestScore = -1
+        var smallestDiff = Long.MAX_VALUE
 
         for (dir in searchDirs) {
             if (!dir.exists() || !dir.isDirectory) continue
@@ -71,44 +73,79 @@ object RecordingSearchHelper {
             } ?: continue
 
             for (file in files) {
-                val score = calculateMatchScore(file, lastDigits, callEndTime, callTimestamp)
-                if (score > highestScore) {
+                val score = calculateMatchScore(file, cleanedTargetNumber, lastDigits, contactName, callEndTime, callTimestamp)
+                if (score <= 0) continue
+
+                val fileLastModified = file.lastModified()
+                val diffFromEnd = abs(fileLastModified - callEndTime)
+
+                if (score > highestScore || (score == highestScore && diffFromEnd < smallestDiff)) {
                     highestScore = score
+                    smallestDiff = diffFromEnd
                     bestMatch = file
                 }
             }
         }
 
-        return if (highestScore >= 35) bestMatch else null
+        return if (highestScore >= 40) bestMatch else null
     }
 
     fun calculateMatchScore(
         file: File,
+        targetFullPhone: String,
         targetLastDigits: String,
+        contactName: String,
         callEndTime: Long,
         callStartTime: Long
     ): Int {
+        val fileLastModified = file.lastModified()
+
+        // 1. HARD SAFETY CHECK:
+        // A recording for THIS call cannot have been modified before the call started!
+        // Allow at most 4 seconds of clock skew. If file is older, it belongs to a PREVIOUS call!
+        if (fileLastModified < (callStartTime - 4000L)) {
+            return -1 // Disqualify past calls completely
+        }
+
         var score = 0
         val fileName = file.name
         val cleanedFileName = fileName.replace(Regex("[^0-9]"), "")
 
-        // 1. Phone number correlation (+60 points)
-        if (targetLastDigits.isNotEmpty() && cleanedFileName.contains(targetLastDigits)) {
+        // 2. Contact Name Matching (+150 points)
+        // Vivo OEM recorder names files: "<Contact Name> YYYY-MM-DD HH-mm-ss.m4a"
+        if (contactName.isNotBlank()) {
+            val nameWords = contactName.trim().split(Regex("\\s+"))
+            var matchedAnyWord = false
+            for (word in nameWords) {
+                if (word.length >= 2 && fileName.contains(word, ignoreCase = true)) {
+                    score += 150
+                    matchedAnyWord = true
+                    break
+                }
+            }
+            // If contactName is provided, but the filename clearly belongs to another known contact name, penalize
+            if (!matchedAnyWord && (fileName.startsWith("Bunda", true) || fileName.startsWith("Alya", true))) {
+                score -= 100
+            }
+        }
+
+        // 3. Phone number correlation (+100 points for full, +60 for last 7 digits)
+        if (targetFullPhone.length >= 8 && cleanedFileName.contains(targetFullPhone)) {
+            score += 100
+        } else if (targetLastDigits.length >= 6 && cleanedFileName.contains(targetLastDigits)) {
             score += 60
         }
 
-        // 2. Proximity calculation (+5 to +50 points)
-        val fileLastModified = file.lastModified()
+        // 4. Proximity calculation based on Call End Time (+5 to +60 points)
         val diffFromEnd = abs(fileLastModified - callEndTime)
-        val diffFromStart = abs(fileLastModified - callStartTime)
-        val minDiff = minOf(diffFromEnd, diffFromStart)
 
         when {
-            minDiff <= 30_000L -> score += 50
-            minDiff <= 60_000L -> score += 40
-            minDiff <= 120_000L -> score += 30
-            minDiff <= 300_000L -> score += 15
-            minDiff <= 600_000L -> score += 5
+            diffFromEnd <= 10_000L -> score += 60
+            diffFromEnd <= 20_000L -> score += 45
+            diffFromEnd <= 40_000L -> score += 30
+            diffFromEnd <= 75_000L -> score += 15
+            diffFromEnd <= 120_000L -> score += 5
+            else -> score -= 30
         }
 
         return score

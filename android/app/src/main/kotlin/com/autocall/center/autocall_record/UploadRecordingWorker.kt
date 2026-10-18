@@ -9,11 +9,14 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import kotlinx.coroutines.delay
+import android.util.Base64
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -37,6 +40,7 @@ class UploadRecordingWorker(
         const val TAG = "UploadRecordingWorker"
 
         const val KEY_PHONE_NUMBER = "KEY_PHONE_NUMBER"
+        const val KEY_CONTACT_NAME = "KEY_CONTACT_NAME"
         const val KEY_CALL_TIMESTAMP = "KEY_CALL_TIMESTAMP"
         const val KEY_CALL_DURATION = "KEY_CALL_DURATION"
         const val KEY_CALL_TYPE = "KEY_CALL_TYPE"
@@ -65,19 +69,20 @@ class UploadRecordingWorker(
 
     override suspend fun doWork(): Result {
         val phoneNumber = inputData.getString(KEY_PHONE_NUMBER) ?: "UNKNOWN"
+        val contactName = inputData.getString(KEY_CONTACT_NAME) ?: ""
         val callTimestamp = inputData.getLong(KEY_CALL_TIMESTAMP, System.currentTimeMillis())
         val callDuration = inputData.getLong(KEY_CALL_DURATION, 0L)
         val callType = inputData.getString(KEY_CALL_TYPE) ?: "OUTGOING"
         val apiUrl = inputData.getString(KEY_API_URL) ?: DEFAULT_API_URL
 
-        Log.i(TAG, "Starting recording sync for: $phoneNumber (Timestamp: $callTimestamp, Duration: ${callDuration}s)")
+        Log.i(TAG, "Starting recording sync for: $contactName ($phoneNumber) (Timestamp: $callTimestamp, Duration: ${callDuration}s)")
         notifyStatus("UPLOADING", phoneNumber, "Mencari file rekaman panggilan...", null)
 
         // 1. Locate the recording file. OEM recorders can take a few seconds to flush to disk.
         var targetFile: File? = null
         val maxAttempts = 3
         for (attempt in 1..maxAttempts) {
-            targetFile = findMatchingRecordingFile(phoneNumber, callTimestamp, callDuration)
+            targetFile = findMatchingRecordingFile(phoneNumber, contactName, callTimestamp, callDuration)
             if (targetFile != null) {
                 Log.i(TAG, "Found matching recording on attempt $attempt: ${targetFile.absolutePath}")
                 break
@@ -97,63 +102,128 @@ class UploadRecordingWorker(
 
         notifyStatus("UPLOADING", phoneNumber, "Mengunggah rekaman (${targetFile.name})...", targetFile.absolutePath)
 
-        // 2. Perform OkHttp Multipart Upload
+        // 2. Perform Upload (Google Apps Script JSON Base64 or Standard Multipart)
         return try {
-            val mediaType = when (targetFile.extension.lowercase()) {
-                "mp3" -> "audio/mpeg".toMediaTypeOrNull()
-                "m4a" -> "audio/mp4".toMediaTypeOrNull()
-                "amr" -> "audio/amr".toMediaTypeOrNull()
-                "aac" -> "audio/aac".toMediaTypeOrNull()
-                else -> "audio/*".toMediaTypeOrNull()
-            }
+            val isGoogleAppsScript = apiUrl.contains("script.google.com")
 
-            val requestBody = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart(
-                    "file",
-                    targetFile.name,
-                    targetFile.asRequestBody(mediaType)
-                )
-                .addFormDataPart("phone_number", phoneNumber)
-                .addFormDataPart("call_duration", callDuration.toString())
-                .addFormDataPart("call_timestamp", callTimestamp.toString())
-                .addFormDataPart("call_type", callType)
-                .addFormDataPart("device_manufacturer", Build.MANUFACTURER)
-                .addFormDataPart("device_model", Build.MODEL)
-                .addFormDataPart("android_sdk", Build.VERSION.SDK_INT.toString())
-                .build()
+            val requestBody = if (isGoogleAppsScript) {
+                val fileBytes = targetFile.readBytes()
+                val base64Audio = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
+                val jsonPayload = JSONObject().apply {
+                    put("action", "upload_recording")
+                    put("phone_number", phoneNumber)
+                    put("name", contactName)
+                    put("status", if (callDuration > 0) "TERHUBUNG (${callDuration}s)" else "SELESAI")
+                    put("call_duration", callDuration)
+                    put("call_timestamp", callTimestamp)
+                    put("call_type", callType)
+                    put("file_name", targetFile.name)
+                    put("audio_base64", base64Audio)
+                    put("device_manufacturer", Build.MANUFACTURER)
+                    put("device_model", Build.MODEL)
+                }.toString()
+
+                jsonPayload.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+            } else {
+                val mediaType = when (targetFile.extension.lowercase()) {
+                    "mp3" -> "audio/mpeg".toMediaTypeOrNull()
+                    "m4a" -> "audio/mp4".toMediaTypeOrNull()
+                    "amr" -> "audio/amr".toMediaTypeOrNull()
+                    "aac" -> "audio/aac".toMediaTypeOrNull()
+                    else -> "audio/*".toMediaTypeOrNull()
+                }
+
+                MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart(
+                        "file",
+                        targetFile.name,
+                        targetFile.asRequestBody(mediaType)
+                    )
+                    .addFormDataPart("phone_number", phoneNumber)
+                    .addFormDataPart("call_duration", callDuration.toString())
+                    .addFormDataPart("call_timestamp", callTimestamp.toString())
+                    .addFormDataPart("call_type", callType)
+                    .addFormDataPart("device_manufacturer", Build.MANUFACTURER)
+                    .addFormDataPart("device_model", Build.MODEL)
+                    .addFormDataPart("android_sdk", Build.VERSION.SDK_INT.toString())
+                    .build()
+            }
 
             val request = Request.Builder()
                 .url(apiUrl)
                 .header("User-Agent", "AutoCallCenter-Android/${Build.MODEL}")
+                .header("Accept", "application/json")
                 .post(requestBody)
                 .build()
 
             Log.i(TAG, "Executing upload request to $apiUrl for file ${targetFile.name} (${targetFile.length()} bytes)")
             val response = httpClient.newCall(request).execute()
 
-            response.use { res ->
-                val responseBody = res.body?.string() ?: ""
-                if (res.isSuccessful) {
-                    Log.i(TAG, "Upload successful: Code ${res.code}, Body: $responseBody")
-                    notifyStatus("SUCCESS", phoneNumber, "Rekaman berhasil diunggah", targetFile.absolutePath)
-                    Result.success(
-                        workDataOf(
-                            "uploaded_file" to targetFile.absolutePath,
-                            "response_code" to res.code
-                        )
-                    )
-                } else if (res.code in 500..599) {
-                    val errMsg = "Server backend error (HTTP ${res.code}). Worker akan retry."
-                    Log.e(TAG, errMsg)
-                    notifyStatus("FAILED", phoneNumber, errMsg, targetFile.absolutePath)
-                    Result.retry()
+            var finalCode = response.code
+            var responseBody = ""
+
+            // Handle Google Apps Script 302 Redirect
+            if (response.code == 302) {
+                val redirectUrl = response.header("Location")
+                if (!redirectUrl.isNullOrEmpty()) {
+                    Log.d(TAG, "Following Google Apps Script redirect to $redirectUrl")
+                    val redirectRequest = Request.Builder()
+                        .url(redirectUrl)
+                        .header("Accept", "application/json")
+                        .get()
+                        .build()
+                    val redirectResponse = httpClient.newCall(redirectRequest).execute()
+                    finalCode = redirectResponse.code
+                    responseBody = redirectResponse.body?.string() ?: ""
+                    redirectResponse.close()
                 } else {
-                    val errMsg = "Upload ditolak backend (HTTP ${res.code}): $responseBody"
-                    Log.e(TAG, errMsg)
-                    notifyStatus("FAILED", phoneNumber, errMsg, targetFile.absolutePath)
-                    Result.failure(workDataOf("error" to errMsg, "response_code" to res.code))
+                    finalCode = 200
+                    responseBody = response.body?.string() ?: ""
                 }
+            } else {
+                responseBody = response.body?.string() ?: ""
+            }
+            response.close()
+
+            var isBackendSuccess = false
+            var responseErrorMessage = ""
+
+            if (finalCode in 200..299 || (isGoogleAppsScript && finalCode == 302)) {
+                // If Google Apps Script returned a JSON error (e.g. DriveApp authorization missing)
+                if (responseBody.contains("\"status\":\"error\"") || responseBody.contains("\"error\"")) {
+                    try {
+                        val json = JSONObject(responseBody)
+                        responseErrorMessage = json.optString("message", json.optString("error", "Error server"))
+                    } catch (e: Exception) {
+                        responseErrorMessage = "Respon error: $responseBody"
+                    }
+                    isBackendSuccess = false
+                } else {
+                    isBackendSuccess = true
+                }
+            }
+
+            if (isBackendSuccess) {
+                Log.i(TAG, "Upload successful: Code $finalCode, Body: $responseBody")
+                val successMsg = if (isGoogleAppsScript) "Rekaman & Status tersimpan ke Spreadsheet" else "Rekaman berhasil diunggah"
+                notifyStatus("SUCCESS", phoneNumber, successMsg, targetFile.absolutePath)
+                Result.success(
+                    workDataOf(
+                        "uploaded_file" to targetFile.absolutePath,
+                        "response_code" to finalCode
+                    )
+                )
+            } else if (finalCode in 500..599) {
+                val errMsg = "Server backend error (HTTP $finalCode). Worker akan retry."
+                Log.e(TAG, errMsg)
+                notifyStatus("FAILED", phoneNumber, errMsg, targetFile.absolutePath)
+                Result.retry()
+            } else {
+                val errMsg = if (responseErrorMessage.isNotBlank()) responseErrorMessage else "Upload ditolak backend (HTTP $finalCode): $responseBody"
+                Log.e(TAG, errMsg)
+                notifyStatus("FAILED", phoneNumber, errMsg, targetFile.absolutePath)
+                Result.failure(workDataOf("error" to errMsg, "response_code" to finalCode))
             }
         } catch (e: IOException) {
             Log.e(TAG, "Network error during upload: ${e.localizedMessage}. Scheduling retry.", e)
@@ -171,10 +241,11 @@ class UploadRecordingWorker(
      */
     private fun findMatchingRecordingFile(
         phoneNumber: String,
+        contactName: String,
         callTimestamp: Long,
         callDuration: Long
     ): File? {
-        return RecordingSearchHelper.findMatchingRecordingFile(phoneNumber, callTimestamp, callDuration)
+        return RecordingSearchHelper.findMatchingRecordingFile(phoneNumber, contactName, callTimestamp, callDuration)
     }
 
     private fun notifyStatus(status: String, phoneNumber: String, message: String, filePath: String?) {
