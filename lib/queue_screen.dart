@@ -61,6 +61,19 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
         ),
         actions: [
           IconButton(
+            tooltip: 'Tarik Kontak API Database',
+            icon: provider.isLoadingContactsFromApi
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.cloud_download),
+            onPressed: provider.isLoadingContactsFromApi
+                ? null
+                : () => _fetchContactsFromApiDirect(context, provider),
+          ),
+          IconButton(
             tooltip: 'Pustaka Rekaman HP',
             icon: const Icon(Icons.library_music),
             onPressed: () => RecordingsLibraryDialog.show(context),
@@ -796,10 +809,24 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
             style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
           ),
           const SizedBox(height: 16),
-          ElevatedButton.icon(
-            onPressed: () => _showAddNumberDialog(context, provider),
-            icon: const Icon(Icons.add),
-            label: const Text('Tambah Nomor Sekarang'),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            alignment: WrapAlignment.center,
+            children: [
+              ElevatedButton.icon(
+                onPressed: () => _showAddNumberDialog(context, provider),
+                icon: const Icon(Icons.add),
+                label: const Text('Tambah Nomor'),
+              ),
+              OutlinedButton.icon(
+                onPressed: provider.isLoadingContactsFromApi
+                    ? null
+                    : () => _fetchContactsFromApiDirect(context, provider),
+                icon: const Icon(Icons.cloud_download),
+                label: const Text('Tarik dari API'),
+              ),
+            ],
           ),
         ],
       ),
@@ -810,6 +837,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
     final singlePhoneController = TextEditingController();
     final singleNameController = TextEditingController();
     final batchController = TextEditingController();
+    final apiFetchUrlController = TextEditingController(text: provider.contactsApiUrl);
+    bool clearExistingQueue = false;
+    bool isFetchingApi = false;
 
     showModalBottomSheet(
       context: context,
@@ -818,97 +848,225 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) {
-        return DefaultTabController(
-          length: 2,
-          child: Padding(
-            padding: EdgeInsets.only(
-              bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-              top: 20,
-              left: 20,
-              right: 20,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'Tambah Nomor ke Antrean',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return DefaultTabController(
+              length: 3,
+              child: Padding(
+                padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+                  top: 20,
+                  left: 20,
+                  right: 20,
                 ),
-                const SizedBox(height: 12),
-                const TabBar(
-                  tabs: [
-                    Tab(text: 'Satu Nomor'),
-                    Tab(text: 'Batch / Paste'),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  height: 200,
-                  child: TabBarView(
-                    children: [
-                      // Tab 1: Single Number
-                      Column(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Tambah Nomor ke Antrean',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 12),
+                    const TabBar(
+                      isScrollable: true,
+                      tabAlignment: TabAlignment.center,
+                      tabs: [
+                        Tab(icon: Icon(Icons.person_add), text: 'Satu Nomor'),
+                        Tab(icon: Icon(Icons.playlist_add), text: 'Batch / Paste'),
+                        Tab(icon: Icon(Icons.cloud_download), text: 'Tarik API Database'),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      height: 380,
+                      child: TabBarView(
                         children: [
-                          TextField(
-                            controller: singlePhoneController,
-                            keyboardType: TextInputType.phone,
-                            decoration: const InputDecoration(
-                              labelText: 'Nomor Telepon',
-                              hintText: 'Contoh: 081234567890',
-                              prefixIcon: Icon(Icons.phone),
-                              border: OutlineInputBorder(),
+                          // Tab 1: Single Number
+                          SingleChildScrollView(
+                            child: Column(
+                              children: [
+                                TextField(
+                                  controller: singlePhoneController,
+                                  keyboardType: TextInputType.phone,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Nomor Telepon',
+                                    hintText: 'Contoh: 081234567890',
+                                    prefixIcon: Icon(Icons.phone),
+                                    border: OutlineInputBorder(),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                TextField(
+                                  controller: singleNameController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Nama / Label (Opsional)',
+                                    prefixIcon: Icon(Icons.person),
+                                    border: OutlineInputBorder(),
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    minimumSize: const Size.fromHeight(48),
+                                    backgroundColor: Theme.of(context).primaryColor,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  onPressed: () {
+                                    if (singlePhoneController.text.trim().isNotEmpty) {
+                                      provider.addNumber(
+                                        singlePhoneController.text.trim(),
+                                        singleNameController.text.trim(),
+                                      );
+                                    }
+                                    Navigator.pop(ctx);
+                                  },
+                                  icon: const Icon(Icons.check),
+                                  label: const Text('Simpan ke Antrean'),
+                                ),
+                              ],
                             ),
                           ),
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: singleNameController,
-                            decoration: const InputDecoration(
-                              labelText: 'Nama / Label (Opsional)',
-                              prefixIcon: Icon(Icons.person),
-                              border: OutlineInputBorder(),
+                          // Tab 2: Batch Paste
+                          SingleChildScrollView(
+                            child: Column(
+                              children: [
+                                TextField(
+                                  controller: batchController,
+                                  maxLines: 5,
+                                  keyboardType: TextInputType.multiline,
+                                  decoration: const InputDecoration(
+                                    hintText:
+                                        'Paste nomor disini (satu nomor per baris):\n081234567890\n085712345678, Budi\n081998877665, Siti',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                ),
+                                const SizedBox(height: 14),
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    minimumSize: const Size.fromHeight(48),
+                                    backgroundColor: Theme.of(context).primaryColor,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  onPressed: () {
+                                    if (batchController.text.trim().isNotEmpty) {
+                                      final lines = batchController.text.split('\n');
+                                      provider.addBatchNumbers(lines);
+                                    }
+                                    Navigator.pop(ctx);
+                                  },
+                                  icon: const Icon(Icons.library_add_check),
+                                  label: const Text('Simpan Semua ke Antrean'),
+                                ),
+                              ],
+                            ),
+                          ),
+                          // Tab 3: Pull from Database API
+                          SingleChildScrollView(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                TextField(
+                                  controller: apiFetchUrlController,
+                                  decoration: InputDecoration(
+                                    labelText: 'URL API Database Kontak',
+                                    hintText: 'https://domain.com/api/v1/contacts',
+                                    prefixIcon: const Icon(Icons.cloud_download),
+                                    suffixIcon: IconButton(
+                                      icon: const Icon(Icons.clear),
+                                      onPressed: () => apiFetchUrlController.clear(),
+                                    ),
+                                    border: const OutlineInputBorder(),
+                                  ),
+                                ),
+                                _buildApiGuideCard(context),
+                                CheckboxListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: const Text(
+                                    'Gantikan / kosongkan antrean lama',
+                                    style: TextStyle(fontSize: 13),
+                                  ),
+                                  value: clearExistingQueue,
+                                  onChanged: (val) {
+                                    setModalState(() {
+                                      clearExistingQueue = val ?? false;
+                                    });
+                                  },
+                                ),
+                                const SizedBox(height: 8),
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    minimumSize: const Size.fromHeight(48),
+                                    backgroundColor: Colors.teal,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  onPressed: isFetchingApi
+                                      ? null
+                                      : () async {
+                                          final url = apiFetchUrlController.text.trim();
+                                          if (url.isEmpty) {
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              const SnackBar(content: Text('Harap masukkan URL API database')),
+                                            );
+                                            return;
+                                          }
+                                          setModalState(() => isFetchingApi = true);
+                                          try {
+                                            await provider.setContactsApiUrl(url);
+                                            final count = await provider.fetchContactsFromApi(
+                                              overrideUrl: url,
+                                              clearExisting: clearExistingQueue,
+                                            );
+                                            if (ctx.mounted) {
+                                              Navigator.pop(ctx);
+                                            }
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                SnackBar(
+                                                  content: Text('Berhasil memuat $count kontak dari API!'),
+                                                  backgroundColor: Colors.green,
+                                                ),
+                                              );
+                                            }
+                                          } catch (e) {
+                                            setModalState(() => isFetchingApi = false);
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                SnackBar(
+                                                  content: Text('Gagal menarik kontak: $e'),
+                                                  backgroundColor: Colors.red,
+                                                ),
+                                              );
+                                            }
+                                          }
+                                        },
+                                  icon: isFetchingApi
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.white,
+                                          ),
+                                        )
+                                      : const Icon(Icons.download),
+                                  label: Text(
+                                    isFetchingApi
+                                        ? 'Menghubungi API...'
+                                        : 'Tarik Kontak dari API Database',
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ],
                       ),
-                      // Tab 2: Batch Paste
-                      TextField(
-                        controller: batchController,
-                        maxLines: 6,
-                        keyboardType: TextInputType.multiline,
-                        decoration: const InputDecoration(
-                          hintText:
-                              'Paste nomor disini (satu nomor per baris):\n081234567890\n085712345678, Budi\n081998877665, Siti',
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 16),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    minimumSize: const Size.fromHeight(48),
-                    backgroundColor: Theme.of(context).primaryColor,
-                    foregroundColor: Colors.white,
-                  ),
-                  onPressed: () {
-                    if (singlePhoneController.text.trim().isNotEmpty) {
-                      provider.addNumber(
-                        singlePhoneController.text.trim(),
-                        singleNameController.text.trim(),
-                      );
-                    }
-                    if (batchController.text.trim().isNotEmpty) {
-                      final lines = batchController.text.split('\n');
-                      provider.addBatchNumbers(lines);
-                    }
-                    Navigator.pop(ctx);
-                  },
-                  child: const Text('Simpan ke Antrean'),
-                ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
@@ -1116,7 +1274,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   }
 
   void _showSettingsDialog(BuildContext context, CallQueueProvider provider) {
-    final urlController = TextEditingController(text: provider.backendUrl);
+    final uploadUrlController = TextEditingController(text: provider.backendUrl);
+    final contactsUrlController =
+        TextEditingController(text: provider.contactsApiUrl);
     int currentDelay = provider.cooldownTotalSeconds;
     int currentTimeout = provider.callTimeoutSeconds;
 
@@ -1186,16 +1346,38 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 16),
 
-                    // 3. Backend Upload API
+                    // 3. API Daftar Kontak Database
                     const Text(
-                      'Endpoint Backend Upload API:',
+                      'URL API Daftar Kontak (Database Leads):',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 6),
                     TextField(
-                      controller: urlController,
+                      controller: contactsUrlController,
+                      decoration: InputDecoration(
+                        hintText: 'https://domain.com/api/v1/contacts',
+                        prefixIcon: const Icon(Icons.contacts),
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: () => contactsUrlController.clear(),
+                        ),
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                    _buildApiGuideCard(context),
+                    const SizedBox(height: 16),
+
+                    // 4. Backend Upload API
+                    const Text(
+                      'Endpoint Backend Upload Rekaman API:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: uploadUrlController,
                       decoration: const InputDecoration(
                         hintText: 'https://backend.com/api/v1/recordings/upload',
+                        prefixIcon: Icon(Icons.cloud_upload),
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -1211,7 +1393,8 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                   onPressed: () {
                     provider.setCallTimeoutSeconds(currentTimeout);
                     provider.setCooldownSeconds(currentDelay);
-                    provider.setBackendUrl(urlController.text.trim());
+                    provider.setBackendUrl(uploadUrlController.text.trim());
+                    provider.setContactsApiUrl(contactsUrlController.text.trim());
                     Navigator.pop(ctx);
                   },
                   child: const Text('Simpan'),
@@ -1221,6 +1404,161 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           },
         );
       },
+    );
+  }
+
+  Future<void> _fetchContactsFromApiDirect(
+    BuildContext context,
+    CallQueueProvider provider,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+
+    // Validate if URL is configured in settings
+    if (provider.contactsApiUrl.trim().isEmpty) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: const Text(
+            'URL API belum diatur. Masukkan URL API database Anda di menu Pengaturan.',
+          ),
+          backgroundColor: Colors.orange.shade800,
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: 'Atur URL',
+            textColor: Colors.white,
+            onPressed: () => _showSettingsDialog(context, provider),
+          ),
+        ),
+      );
+      return;
+    }
+
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            SizedBox(width: 12),
+            Text('Menghubungi API database kontak...'),
+          ],
+        ),
+        duration: Duration(seconds: 2),
+      ),
+    );
+
+    try {
+      final count = await provider.fetchContactsFromApi();
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Berhasil mengambil $count kontak dari database!'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Gagal menarik kontak API: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: 'Atur URL',
+            textColor: Colors.white,
+            onPressed: () => _showSettingsDialog(context, provider),
+          ),
+        ),
+      );
+    }
+  }
+
+  /// Information card detailing supported API column headers & JSON formats
+  Widget _buildApiGuideCard(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.blue.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info_outline, size: 18, color: Colors.blue.shade800),
+              const SizedBox(width: 6),
+              Text(
+                'Panduan Header / Nama Kolom API',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                  color: Colors.blue.shade900,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Agar kontak terbaca otomatis dan tidak gagal, gunakan salah satu penamaan header kolom berikut pada API / Google Sheets Anda:',
+            style: TextStyle(fontSize: 11, height: 1.3),
+          ),
+          const SizedBox(height: 6),
+          // Kolom Telepon
+          RichText(
+            text: TextSpan(
+              style: const TextStyle(fontSize: 11, color: Colors.black87),
+              children: [
+                const TextSpan(
+                  text: '• Kolom Nomor HP: ',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                TextSpan(
+                  text: 'No_Tlp, phone, phoneNumber, nomor, no_hp, telepon, telp, mobile',
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    color: Colors.blue.shade900,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 4),
+          // Kolom Nama
+          RichText(
+            text: TextSpan(
+              style: const TextStyle(fontSize: 11, color: Colors.black87),
+              children: [
+                const TextSpan(
+                  text: '• Kolom Nama: ',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                TextSpan(
+                  text: 'Name, nama, name, full_name, customer_name, client',
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    color: Colors.blue.shade900,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 4),
+          // Format JSON
+          const Text(
+            '• Format JSON: Mendukung Array [...] atau Objek {"data": [...]}',
+            style: TextStyle(fontSize: 11, color: Colors.black87),
+          ),
+        ],
+      ),
     );
   }
 

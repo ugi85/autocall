@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'models/call_item.dart';
 import 'native_bridge.dart';
@@ -22,7 +23,10 @@ class CallQueueProvider with ChangeNotifier {
 
   StreamSubscription<Map<String, dynamic>>? _telephonySubscription;
   Map<String, dynamic> _permissionsStatus = {};
+  // Backend Upload API & Contacts Fetch API
   String _backendUrl = 'https://your-api-domain.com/api/v1/recordings/upload';
+  String _contactsApiUrl = '';
+  bool _isLoadingContactsFromApi = false;
 
   // Call Timeout Configuration (Auto-hangup jika tidak diangkat, sibuk, atau tidak aktif)
   int _callTimeoutSeconds = 25; // Default 25 detik
@@ -39,6 +43,7 @@ class CallQueueProvider with ChangeNotifier {
   static const String _keyTimeout = 'autocall_call_timeout_seconds';
   static const String _keyCooldown = 'autocall_cooldown_seconds';
   static const String _keyBackendUrl = 'autocall_backend_url';
+  static const String _keyContactsApiUrl = 'autocall_contacts_api_url';
 
   CallQueueProvider() {
     _loadPersistedData();
@@ -59,6 +64,8 @@ class CallQueueProvider with ChangeNotifier {
   bool get isAccessibilityEnabled => _isAccessibilityEnabled;
   bool get canDrawOverlays => _canDrawOverlays;
   String get backendUrl => _backendUrl;
+  String get contactsApiUrl => _contactsApiUrl;
+  bool get isLoadingContactsFromApi => _isLoadingContactsFromApi;
 
   int get callTimeoutSeconds => _callTimeoutSeconds;
   int get callSecondsElapsed => _callSecondsElapsed;
@@ -127,6 +134,20 @@ class CallQueueProvider with ChangeNotifier {
         }
       }
 
+      // Load contacts API URL
+      if (prefs.containsKey(_keyContactsApiUrl)) {
+        final savedContactsUrl = prefs.getString(_keyContactsApiUrl);
+        if (savedContactsUrl != null && savedContactsUrl.isNotEmpty) {
+          final sanitized = sanitizeApiUrl(savedContactsUrl);
+          if (sanitized.isNotEmpty && !sanitized.contains('your-api-domain.com')) {
+            _contactsApiUrl = sanitized;
+            if (sanitized != savedContactsUrl) {
+              _saveSettingsToStorage();
+            }
+          }
+        }
+      }
+
       // Load queue
       final jsonString = prefs.getString(_keyQueue);
       if (jsonString != null && jsonString.isNotEmpty) {
@@ -167,6 +188,7 @@ class CallQueueProvider with ChangeNotifier {
       await prefs.setInt(_keyTimeout, _callTimeoutSeconds);
       await prefs.setInt(_keyCooldown, _cooldownTotalSeconds);
       await prefs.setString(_keyBackendUrl, _backendUrl);
+      await prefs.setString(_keyContactsApiUrl, _contactsApiUrl);
     } catch (e) {
       debugPrint('[CallQueueProvider] Failed to save settings to storage: $e');
     }
@@ -654,6 +676,168 @@ class CallQueueProvider with ChangeNotifier {
       await _nativeBridge.setBackendUrl(clean);
       notifyListeners();
       _saveSettingsToStorage();
+    }
+  }
+
+  /// Cleans up accidentally merged URLs (e.g. if pasted on top of placeholder)
+  static String sanitizeApiUrl(String rawUrl) {
+    var url = rawUrl.trim();
+    if (url.isEmpty) return '';
+
+    // If pasted over placeholder and merged e.g. '.../execur-api-domain.com/api/v1/contacts'
+    if (url.contains('script.google.com') && url.contains('/exec')) {
+      final execIdx = url.indexOf('/exec');
+      url = url.substring(0, execIdx + 5);
+    } else if (url.contains('your-api-domain.com') && url.startsWith('http')) {
+      url = url.replaceAll(RegExp(r'https?://your-api-domain\.com[^\s]*'), '').trim();
+    }
+    return url;
+  }
+
+  Future<void> setContactsApiUrl(String url) async {
+    final clean = sanitizeApiUrl(url);
+    _contactsApiUrl = clean;
+    notifyListeners();
+    _saveSettingsToStorage();
+  }
+
+  /// Fetches contact list from external API database and loads them into the queue.
+  /// Supports common JSON schemas:
+  /// - Array of objects: [ {"phoneNumber": "...", "name": "..."}, ... ]
+  /// - Nested in data/contacts/leads/results: { "data": [ ... ] }
+  Future<int> fetchContactsFromApi({String? overrideUrl, bool clearExisting = false}) async {
+    final rawUrl = overrideUrl?.trim().isNotEmpty == true
+        ? overrideUrl!.trim()
+        : _contactsApiUrl.trim();
+
+    final targetUrl = sanitizeApiUrl(rawUrl);
+
+    if (targetUrl.isEmpty) {
+      throw Exception(
+        'URL API belum diatur. Silakan masukkan URL API kontak di menu Pengaturan aplikasi.',
+      );
+    }
+
+    if (targetUrl != _contactsApiUrl) {
+      _contactsApiUrl = targetUrl;
+      _saveSettingsToStorage();
+    }
+
+    _isLoadingContactsFromApi = true;
+    notifyListeners();
+
+    try {
+      final response = await http.get(
+        Uri.parse(targetUrl),
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'AutoCallApp/1.0',
+        },
+      ).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode != 200) {
+        throw Exception('Server merespon dengan status HTTP ${response.statusCode}');
+      }
+
+      final dynamic decoded = jsonDecode(response.body);
+      List<dynamic> itemsList = [];
+
+      if (decoded is List) {
+        itemsList = decoded;
+      } else if (decoded is Map<String, dynamic>) {
+        if (decoded['data'] is List) {
+          itemsList = decoded['data'] as List;
+        } else if (decoded['contacts'] is List) {
+          itemsList = decoded['contacts'] as List;
+        } else if (decoded['leads'] is List) {
+          itemsList = decoded['leads'] as List;
+        } else if (decoded['results'] is List) {
+          itemsList = decoded['results'] as List;
+        } else if (decoded['items'] is List) {
+          itemsList = decoded['items'] as List;
+        }
+      }
+
+      if (itemsList.isEmpty) {
+        _isLoadingContactsFromApi = false;
+        notifyListeners();
+        return 0;
+      }
+
+      if (clearExisting) {
+        _queue.clear();
+      }
+
+      int addedCount = 0;
+      for (final raw in itemsList) {
+        if (raw is! Map) continue;
+        final map = Map<String, dynamic>.from(raw);
+
+        // Normalize all keys to lowercase alphanumeric for robust case-insensitive extraction
+        // Handles: "No_Tlp" -> "notlp", "phoneNumber" -> "phonenumber", "Name" -> "name"
+        final normalized = <String, dynamic>{};
+        for (final entry in map.entries) {
+          final cleanKey = entry.key
+              .toString()
+              .toLowerCase()
+              .replaceAll(RegExp(r'[^a-z0-9]'), '');
+          normalized[cleanKey] = entry.value;
+        }
+
+        // Flexible phone number extraction
+        final phone = (normalized['notlp'] ??
+                normalized['notelp'] ??
+                normalized['nohp'] ??
+                normalized['phone'] ??
+                normalized['phonenumber'] ??
+                normalized['telepon'] ??
+                normalized['telp'] ??
+                normalized['nomor'] ??
+                normalized['mobile'] ??
+                normalized['contact'])
+            ?.toString()
+            .trim() ?? '';
+
+        if (phone.isEmpty) continue;
+
+        // Flexible name extraction
+        final name = (normalized['name'] ??
+                normalized['nama'] ??
+                normalized['fullname'] ??
+                normalized['customername'] ??
+                normalized['customer'] ??
+                normalized['client'] ??
+                normalized['label'])
+            ?.toString()
+            .trim() ?? '';
+
+        final id = (normalized['no'] ??
+                normalized['id'] ??
+                normalized['contactid'] ??
+                normalized['leadid'])
+            ?.toString() ??
+            DateTime.now().microsecondsSinceEpoch.toString();
+
+        _queue.add(
+          CallItem(
+            id: id,
+            phoneNumber: phone,
+            name: name.isNotEmpty ? name : 'Kontak ${_queue.length + 1}',
+            status: CallStatus.pending,
+          ),
+        );
+        addedCount++;
+      }
+
+      _saveQueueToStorage();
+      _isLoadingContactsFromApi = false;
+      notifyListeners();
+
+      return addedCount;
+    } catch (e) {
+      _isLoadingContactsFromApi = false;
+      notifyListeners();
+      rethrow;
     }
   }
 
