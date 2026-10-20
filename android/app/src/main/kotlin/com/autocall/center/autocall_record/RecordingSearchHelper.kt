@@ -31,14 +31,14 @@ object RecordingSearchHelper {
         dirs.add(File(root, "vivo/sound_recorder"))
 
         // 2. Samsung Call Recording paths
-        dirs.add(File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_RECORDINGS), "Call"))
+        dirs.add(File(Environment.getExternalStoragePublicDirectory("Recordings"), "Call"))
 
         // 3. Xiaomi / MIUI / HyperOS Call Recording paths
         dirs.add(File(root, "MIUI/sound_recorder/call_rec"))
         dirs.add(File(root, "MIUI/sound_recorder"))
 
-        // 4. Android 10+ Standard Public Directories
-        dirs.add(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_RECORDINGS))
+        // 4. Android Standard Public Directories (Works on all Android versions)
+        dirs.add(Environment.getExternalStoragePublicDirectory("Recordings"))
         dirs.add(File(root, "Recordings"))
         dirs.add(File(root, "VoiceRecorder"))
         dirs.add(File(root, "SoundRecorder"))
@@ -156,31 +156,39 @@ object RecordingSearchHelper {
      */
     fun scanAllRecordings(): List<Map<String, Any>> {
         val result = mutableListOf<Map<String, Any>>()
-        val searchDirs = getCandidateRecordingDirectories()
-        val seenPaths = mutableSetOf<String>()
+        try {
+            val searchDirs = getCandidateRecordingDirectories()
+            val seenPaths = mutableSetOf<String>()
 
-        for (dir in searchDirs) {
-            if (!dir.exists() || !dir.isDirectory) continue
-            val files = dir.listFiles { file ->
-                file.isFile && AUDIO_EXTENSIONS.contains(file.extension.lowercase()) && file.length() > 1024
-            } ?: continue
+            for (dir in searchDirs) {
+                try {
+                    if (!dir.exists() || !dir.isDirectory) continue
+                    val files = dir.listFiles { file ->
+                        file.isFile && AUDIO_EXTENSIONS.contains(file.extension.lowercase()) && file.length() > 1024
+                    } ?: continue
 
-            for (file in files) {
-                if (seenPaths.add(file.absolutePath)) {
-                    result.add(
-                        mapOf(
-                            "name" to file.name,
-                            "path" to file.absolutePath,
-                            "size" to file.length(),
-                            "lastModified" to file.lastModified()
-                        )
-                    )
-                }
+                    for (file in files) {
+                        try {
+                            if (seenPaths.add(file.absolutePath)) {
+                                result.add(
+                                    mapOf(
+                                        "name" to file.name,
+                                        "path" to file.absolutePath,
+                                        "size" to file.length(),
+                                        "lastModified" to file.lastModified()
+                                    )
+                                )
+                            }
+                        } catch (_: Exception) {}
+                    }
+                } catch (_: Exception) {}
             }
-        }
 
-        // Sort descending by last modified date
-        result.sortByDescending { it["lastModified"] as Long }
+            // Sort descending by last modified date safely
+            result.sortByDescending { (it["lastModified"] as? Long) ?: 0L }
+        } catch (e: Throwable) {
+            android.util.Log.w("RecordingSearchHelper", "scanAllRecordings safe caught: ${e.localizedMessage}")
+        }
         return result
     }
 }

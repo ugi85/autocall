@@ -40,24 +40,29 @@ class AutoCallAccessibilityService : AccessibilityService() {
         fun isAccessibilityEnabled(context: Context): Boolean {
             if (instance != null) return true
 
-            val expectedServiceName = "${context.packageName}/${AutoCallAccessibilityService::class.java.name}"
-            val enabledServicesSetting = Settings.Secure.getString(
-                context.contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-            ) ?: return false
+            return try {
+                val expectedServiceName = "${context.packageName}/${AutoCallAccessibilityService::class.java.name}"
+                val enabledServicesSetting = Settings.Secure.getString(
+                    context.contentResolver,
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                ) ?: return false
 
-            val colonSplitter = TextUtils.SimpleStringSplitter(':')
-            colonSplitter.setString(enabledServicesSetting)
+                val colonSplitter = TextUtils.SimpleStringSplitter(':')
+                colonSplitter.setString(enabledServicesSetting)
 
-            while (colonSplitter.hasNext()) {
-                val componentNameString = colonSplitter.next()
-                if (componentNameString.equals(expectedServiceName, ignoreCase = true) ||
-                    componentNameString.contains(AutoCallAccessibilityService::class.java.simpleName)
-                ) {
-                    return true
+                while (colonSplitter.hasNext()) {
+                    val componentNameString = colonSplitter.next()
+                    if (componentNameString.equals(expectedServiceName, ignoreCase = true) ||
+                        componentNameString.contains(AutoCallAccessibilityService::class.java.simpleName)
+                    ) {
+                        return true
+                    }
                 }
+                false
+            } catch (e: Exception) {
+                Log.w(TAG, "isAccessibilityEnabled check failed gracefully: ${e.localizedMessage}")
+                false
             }
-            return false
         }
 
         /**
@@ -116,17 +121,21 @@ class AutoCallAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        val pkg = event.packageName?.toString() ?: ""
-        if (!isDialerPackage(pkg)) return
+        try {
+            val pkg = event.packageName?.toString() ?: ""
+            if (!isDialerPackage(pkg)) return
 
-        // If foreground service is running and countdown is not yet paused,
-        // monitor if the remote party answered and call timer started ticking!
-        if (AutoCallForegroundService.isRunning && !AutoCallForegroundService.isTimeoutPaused) {
-            val source = event.source
-            if (source != null && hasConnectedCallIndicator(source)) {
-                Log.i(TAG, "Call answered detected via accessibility event in $pkg! Halting timeout.")
-                CallManager.instance?.notifyCallAnswered()
+            // If foreground service is running and countdown is not yet paused,
+            // monitor if the remote party answered and call timer started ticking!
+            if (AutoCallForegroundService.isRunning && !AutoCallForegroundService.isTimeoutPaused) {
+                val source = event.source
+                if (source != null && hasConnectedCallIndicator(source)) {
+                    Log.i(TAG, "Call answered detected via accessibility event in $pkg! Halting timeout.")
+                    CallManager.instance?.notifyCallAnswered()
+                }
             }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Error processing accessibility event: ${e.localizedMessage}")
         }
     }
 

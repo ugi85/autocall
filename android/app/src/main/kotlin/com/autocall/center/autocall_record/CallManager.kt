@@ -18,7 +18,6 @@ import android.provider.Settings
 import android.telecom.TelecomManager
 import android.telephony.PhoneStateListener
 import android.telephony.SubscriptionManager
-import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.annotation.RequiresApi
@@ -94,8 +93,8 @@ class CallManager(
 
     var backendUploadUrl: String = UploadRecordingWorker.DEFAULT_API_URL
 
-    // Android 12+ Callback
-    private var telephonyCallback: TelephonyCallback? = null
+    // Android 12+ Callback (Stored as Any? to prevent NoClassDefFoundError on Android < 12)
+    private var telephonyCallback: Any? = null
 
     // Android 10-11 Listener
     private val legacyPhoneStateListener = object : PhoneStateListener() {
@@ -151,13 +150,20 @@ class CallManager(
     fun startListening() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                registerTelephonyCallbackApi31()
+                telephonyCallback = Api31TelephonyHelper.register(
+                    telephonyManager,
+                    appContext
+                ) { state ->
+                    handleCallStateChanged(state, null)
+                }
             } else {
                 telephonyManager.listen(legacyPhoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
             }
             Log.i(TAG, "Telephony state listener registered successfully.")
         } catch (e: SecurityException) {
             Log.e(TAG, "SecurityException registering call state listener. Permission missing.", e)
+        } catch (e: Throwable) {
+            Log.e(TAG, "General error registering call state listener: ${e.localizedMessage}", e)
         }
     }
 
@@ -168,26 +174,15 @@ class CallManager(
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 telephonyCallback?.let {
-                    telephonyManager.unregisterTelephonyCallback(it)
+                    Api31TelephonyHelper.unregister(telephonyManager, it)
                     telephonyCallback = null
                 }
             } else {
                 telephonyManager.listen(legacyPhoneStateListener, PhoneStateListener.LISTEN_NONE)
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Error unregistering listener: ${e.localizedMessage}")
         }
-    }
-
-    @RequiresApi(Build.VERSION_CODES.S)
-    private fun registerTelephonyCallbackApi31() {
-        val callback = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
-            override fun onCallStateChanged(state: Int) {
-                handleCallStateChanged(state, null)
-            }
-        }
-        telephonyCallback = callback
-        telephonyManager.registerTelephonyCallback(appContext.mainExecutor, callback)
     }
 
     /**
@@ -613,45 +608,61 @@ class CallManager(
      * Checks all runtime and special permissions status.
      */
     fun checkPermissions(): Map<String, Boolean> {
-        val hasCallPhone = ContextCompat.checkSelfPermission(
-            appContext,
-            Manifest.permission.CALL_PHONE
-        ) == PackageManager.PERMISSION_GRANTED
-
-        val hasReadPhoneState = ContextCompat.checkSelfPermission(
-            appContext,
-            Manifest.permission.READ_PHONE_STATE
-        ) == PackageManager.PERMISSION_GRANTED
-
-        val hasReadCallLog = ContextCompat.checkSelfPermission(
-            appContext,
-            Manifest.permission.READ_CALL_LOG
-        ) == PackageManager.PERMISSION_GRANTED
-
-        val hasAllFilesAccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Environment.isExternalStorageManager()
-        } else {
-            ContextCompat.checkSelfPermission(
+        return try {
+            val hasCallPhone = ContextCompat.checkSelfPermission(
                 appContext,
-                Manifest.permission.READ_EXTERNAL_STORAGE
+                Manifest.permission.CALL_PHONE
             ) == PackageManager.PERMISSION_GRANTED
-        }
 
-        val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        val isIgnoringBatteryOptimizations = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            powerManager?.isIgnoringBatteryOptimizations(appContext.packageName) == true
-        } else {
-            true
-        }
+            val hasReadPhoneState = ContextCompat.checkSelfPermission(
+                appContext,
+                Manifest.permission.READ_PHONE_STATE
+            ) == PackageManager.PERMISSION_GRANTED
 
-        return mapOf(
-            "CALL_PHONE" to hasCallPhone,
-            "READ_PHONE_STATE" to hasReadPhoneState,
-            "READ_CALL_LOG" to hasReadCallLog,
-            "MANAGE_EXTERNAL_STORAGE" to hasAllFilesAccess,
-            "IGNORE_BATTERY_OPTIMIZATIONS" to isIgnoringBatteryOptimizations,
-            "ALL_GRANTED" to (hasCallPhone && hasReadPhoneState && hasReadCallLog && hasAllFilesAccess)
-        )
+            val hasReadCallLog = ContextCompat.checkSelfPermission(
+                appContext,
+                Manifest.permission.READ_CALL_LOG
+            ) == PackageManager.PERMISSION_GRANTED
+
+            val hasAllFilesAccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Api30StorageHelper.isExternalStorageManager()
+            } else {
+                ContextCompat.checkSelfPermission(
+                    appContext,
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+
+            val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            val isIgnoringBatteryOptimizations = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                try {
+                    powerManager?.isIgnoringBatteryOptimizations(appContext.packageName) == true
+                } catch (_: Exception) {
+                    false
+                }
+            } else {
+                true
+            }
+
+            mapOf(
+                "CALL_PHONE" to hasCallPhone,
+                "READ_PHONE_STATE" to hasReadPhoneState,
+                "READ_CALL_LOG" to hasReadCallLog,
+                "MANAGE_EXTERNAL_STORAGE" to hasAllFilesAccess,
+                "IGNORE_BATTERY_OPTIMIZATIONS" to isIgnoringBatteryOptimizations,
+                "ALL_GRANTED" to (hasCallPhone && hasReadPhoneState && hasReadCallLog && hasAllFilesAccess)
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "checkPermissions error: ${e.localizedMessage}")
+            mapOf(
+                "CALL_PHONE" to false,
+                "READ_PHONE_STATE" to false,
+                "READ_CALL_LOG" to false,
+                "MANAGE_EXTERNAL_STORAGE" to false,
+                "IGNORE_BATTERY_OPTIMIZATIONS" to false,
+                "ALL_GRANTED" to false
+            )
+        }
     }
 
     /**
@@ -731,4 +742,50 @@ class CallManager(
         val duration: Long,
         val typeString: String
     )
+
+    /**
+     * Isolated helper for Android 12 (API 31+) TelephonyCallback.
+     * Prevents ART ClassLoader on Android 8-11 from throwing NoClassDefFoundError.
+     */
+    @RequiresApi(Build.VERSION_CODES.S)
+    private object Api31TelephonyHelper {
+        fun register(
+            telephonyManager: TelephonyManager,
+            context: Context,
+            onCallState: (Int) -> Unit
+        ): Any {
+            val callback = object : android.telephony.TelephonyCallback(),
+                android.telephony.TelephonyCallback.CallStateListener {
+                override fun onCallStateChanged(state: Int) {
+                    onCallState(state)
+                }
+            }
+            val executor = ContextCompat.getMainExecutor(context)
+            telephonyManager.registerTelephonyCallback(executor, callback)
+            return callback
+        }
+
+        fun unregister(telephonyManager: TelephonyManager, callback: Any) {
+            try {
+                if (callback is android.telephony.TelephonyCallback) {
+                    telephonyManager.unregisterTelephonyCallback(callback)
+                }
+            } catch (_: Throwable) {}
+        }
+    }
+
+    /**
+     * Isolated helper for Android 11 (API 30+) Environment.isExternalStorageManager().
+     * Prevents method verification errors on Android 8-10.
+     */
+    @RequiresApi(Build.VERSION_CODES.R)
+    private object Api30StorageHelper {
+        fun isExternalStorageManager(): Boolean {
+            return try {
+                Environment.isExternalStorageManager()
+            } catch (_: Throwable) {
+                false
+            }
+        }
+    }
 }

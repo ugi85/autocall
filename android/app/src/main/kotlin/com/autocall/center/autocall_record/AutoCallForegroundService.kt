@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -71,10 +72,14 @@ class AutoCallForegroundService : Service() {
                 putExtra(EXTRA_NAME, name)
                 putExtra(EXTRA_TIMEOUT_SECONDS, timeoutSeconds)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to start AutoCallForegroundService: ${e.localizedMessage}", e)
             }
         }
 
@@ -140,8 +145,26 @@ class AutoCallForegroundService : Service() {
                 activeRemainingSeconds = currentCountdown
                 isTimeoutPaused = false
 
-                val notification = buildNotification("Memanggil... Auto-close dalam ${currentCountdown}s")
-                startForeground(NOTIFICATION_ID, notification)
+                try {
+                    val notification = buildNotification("Memanggil... Auto-close dalam ${currentCountdown}s")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        startForeground(
+                            NOTIFICATION_ID,
+                            notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+                        )
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        startForeground(
+                            NOTIFICATION_ID,
+                            notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+                        )
+                    } else {
+                        startForeground(NOTIFICATION_ID, notification)
+                    }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Error in startForeground: ${e.localizedMessage}", e)
+                }
 
                 showFloatingOverlay()
                 startCountdown()
@@ -476,10 +499,12 @@ class AutoCallForegroundService : Service() {
             )
         } else null
 
+        val appIcon = applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.sym_action_call
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AutoCall: $targetPhoneNumber ${if (targetName.isNotEmpty()) "($targetName)" else ""}")
             .setContentText(contentText)
-            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setSmallIcon(appIcon)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -487,8 +512,12 @@ class AutoCallForegroundService : Service() {
     }
 
     private fun updateNotification(contentText: String) {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-        nm?.notify(NOTIFICATION_ID, buildNotification(contentText))
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.notify(NOTIFICATION_ID, buildNotification(contentText))
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed to update notification: ${e.localizedMessage}")
+        }
     }
 
     private fun cleanUpAndStop() {
