@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../call_queue_provider.dart';
 import 'audio_player_sheet.dart';
 
@@ -89,10 +90,12 @@ class _RecordingsLibraryDialogState extends State<RecordingsLibraryDialog> {
                         ),
                       ),
                       Text(
-                        '${all.length} file audio terdeteksi di Vivo / Internal',
+                        '${all.length} file audio terdeteksi di Penyimpanan HP',
                         style: TextStyle(
                           fontSize: 12,
-                          color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                          color: theme.colorScheme.onSurface.withValues(
+                            alpha: 0.6,
+                          ),
                         ),
                       ),
                     ],
@@ -164,7 +167,8 @@ class _RecordingsLibraryDialogState extends State<RecordingsLibraryDialog> {
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          'Pastikan fitur Perekam Otomatis telah aktif di HP Vivo.',
+                          'Pastikan fitur Rekam Panggilan Otomatis telah aktif di pengaturan HP Anda.',
+                          textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 12,
                             color: Colors.grey.shade600,
@@ -175,7 +179,9 @@ class _RecordingsLibraryDialogState extends State<RecordingsLibraryDialog> {
                   )
                 : ListView.separated(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 8),
+                      horizontal: 14,
+                      vertical: 8,
+                    ),
                     itemCount: filtered.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (context, index) {
@@ -214,7 +220,9 @@ class _RecordingsLibraryDialogState extends State<RecordingsLibraryDialog> {
                             style: FilledButton.styleFrom(
                               visualDensity: VisualDensity.compact,
                               padding: const EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 4),
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
                             ),
                             icon: const Icon(Icons.play_arrow, size: 18),
                             label: const Text('Putar'),

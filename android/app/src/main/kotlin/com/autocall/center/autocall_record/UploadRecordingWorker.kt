@@ -80,7 +80,7 @@ class UploadRecordingWorker(
 
         // 1. Locate the recording file. OEM recorders can take a few seconds to flush to disk.
         var targetFile: File? = null
-        val maxAttempts = 3
+        val maxAttempts = 4
         for (attempt in 1..maxAttempts) {
             targetFile = findMatchingRecordingFile(phoneNumber, contactName, callTimestamp, callDuration)
             if (targetFile != null) {
@@ -94,7 +94,7 @@ class UploadRecordingWorker(
         }
 
         if (targetFile == null || !targetFile.exists() || targetFile.length() == 0L) {
-            val errMsg = "File rekaman tidak ditemukan di direktori OEM (Samsung/Xiaomi)"
+            val errMsg = "File rekaman tidak ditemukan di direktori telepon (Infinix/Vivo/Samsung/Xiaomi)"
             Log.w(TAG, "$errMsg untuk nomor $phoneNumber")
             notifyStatus("FAILED", phoneNumber, errMsg, null)
             return Result.failure(workDataOf("error" to errMsg))

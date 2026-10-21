@@ -2,5 +2,5 @@
 <resources>
     <string name="app_name">AutoCall</string>
     <string name="accessibility_service_name">AutoCall Assistant (Tutup Otomatis)</string>
-    <string name="accessibility_service_description">Layanan otomasi AutoCall untuk menutup panggilan telepon secara otomatis saat timeout / tidak diangkat tanpa intervensi manual pada HP Vivo.</string>
+    <string name="accessibility_service_description">Layanan otomasi AutoCall untuk menutup panggilan telepon secara otomatis saat timeout / tidak diangkat tanpa intervensi manual pada HP.</string>
 </resources>

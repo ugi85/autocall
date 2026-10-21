@@ -449,7 +449,7 @@ class CallManager(
      * immediately scans for internal recording file, emits completion event to Flutter,
      * and schedules UploadRecordingWorker.
      */
-    private fun processCallCompleted(targetNumber: String?) {
+    private suspend fun processCallCompleted(targetNumber: String?) {
         val callRecord = queryLatestCallLog(targetNumber)
         val finalNumber = callRecord?.number ?: targetNumber ?: "UNKNOWN"
         val duration = callRecord?.duration ?: 0L
@@ -469,12 +469,17 @@ class CallManager(
 
         val finalName = activeTargetName ?: ""
 
-        // Immediate check for local recording file on internal storage (Vivo, Samsung, etc.)
+        // Immediate check for local recording file on internal storage (Infinix, Vivo, Samsung, Xiaomi, etc.)
         var localRecordingPath = ""
-        val localFile = RecordingSearchHelper.findMatchingRecordingFile(finalNumber, finalName, timestamp, duration)
+        var localFile = RecordingSearchHelper.findMatchingRecordingFile(finalNumber, finalName, timestamp, duration)
+        if (localFile == null && duration > 0L) {
+            // OEM recorders (like Transsion / Infinix / Vivo) can take a few hundred ms to flush audio to disk
+            delay(1000)
+            localFile = RecordingSearchHelper.findMatchingRecordingFile(finalNumber, finalName, timestamp, duration)
+        }
         if (localFile != null && localFile.exists()) {
             localRecordingPath = localFile.absolutePath
-            Log.i(TAG, "Found local recording file immediately: $localRecordingPath")
+            Log.i(TAG, "Found local recording file: $localRecordingPath")
         }
 
         emitEvent(

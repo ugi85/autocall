@@ -132,7 +132,7 @@ class AutoCallForegroundService : Service() {
                 Log.i(TAG, "Received ACTION_PAUSE_TIMEOUT. Pausing countdown timer.")
                 isTimeoutPaused = true
                 stopCountdown()
-                updateNotification("Panggilan Aktif (Bicara / Ditahan)")
+                updateNotification("Panggilan Aktif (Terhubung)")
                 updateOverlayText()
                 return START_STICKY
             }
@@ -369,38 +369,6 @@ class AutoCallForegroundService : Service() {
         }
         root.addView(spacer)
 
-        // Hold / Pause Button
-        val holdBtn = Button(this).apply {
-            tag = "OVERLAY_HOLD_BTN"
-            text = "Tahan"
-            setTextColor(Color.BLACK)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            val btnPad = dpToPx(6)
-            setPadding(btnPad, 0, btnPad, 0)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                dpToPx(32)
-            )
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dpToPx(16).toFloat()
-                setColor(Color.parseColor("#FBBF24")) // Amber-400
-            }
-            setOnClickListener {
-                isTimeoutPaused = true
-                stopCountdown()
-                updateNotification("Panggilan Aktif (Bicara / Ditahan)")
-                updateOverlayText()
-                visibility = View.GONE
-            }
-        }
-        root.addView(holdBtn)
-
-        val spacer2 = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dpToPx(6), 1)
-        }
-        root.addView(spacer2)
-
         // Hangup & Next Button
         val closeBtn = Button(this).apply {
             text = "❌ Tutup"
@@ -434,8 +402,6 @@ class AutoCallForegroundService : Service() {
             if (isTimeoutPaused) {
                 subView?.text = "Terhubung (Sedang Bicara)"
                 subView?.setTextColor(Color.parseColor("#4ADE80")) // Green-400
-                val holdBtn = overlay.findViewWithTag<Button>("OVERLAY_HOLD_BTN")
-                holdBtn?.visibility = View.GONE
             } else {
                 subView?.text = "Auto-close dalam ${currentCountdown}s"
                 subView?.setTextColor(Color.parseColor("#F87171")) // Red-400
@@ -451,9 +417,6 @@ class AutoCallForegroundService : Service() {
             val subView = overlay.findViewWithTag<TextView>("OVERLAY_SUB")
             subView?.text = "Menutup telepon..."
             subView?.setTextColor(Color.parseColor("#F87171"))
-
-            val holdBtn = overlay.findViewWithTag<Button>("OVERLAY_HOLD_BTN")
-            holdBtn?.visibility = View.GONE
         } catch (e: Exception) {
             Log.w(TAG, "Error updating overlay ending state: ${e.localizedMessage}")
         }
