@@ -9,11 +9,11 @@ Sesuai spreadsheet Google Sheets Anda (**Daftar Kontak**):
 - **Tab 1: `Kontak`**  
   Menyimpan daftar nomor telepon, nama calon penerima telepon, dan status panggilan.
 - **Tab 2: `Users`**  
-  Menyimpan akun pengguna login aplikasi AutoCall:
-  | Username | Password | Name | Role | Status |
-  | :--- | :--- | :--- | :--- | :--- |
-  | admin | admin123 | administrator | admin | active |
-  | operator1 | 123456 | opt1 CC | operator | active |
+  Menyimpan akun pengguna login aplikasi AutoCall (kolom `No` bersifat opsional dan otomatis didukung):
+  | No | Username | Password | Name | Role | Status |
+  | :--- | :--- | :--- | :--- | :--- | :--- |
+  | 1 | admin | admin123 | administrator | admin | active |
+  | 2 | operator1 | 123456 | opt1 CC | operator | active |
 
 ---
 

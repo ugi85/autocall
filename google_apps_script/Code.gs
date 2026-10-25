@@ -120,12 +120,12 @@ function handleLogin(username, password) {
   // Jika Sheet "Users" belum ada, buat otomatis dan isi akun default
   if (!userSheet) {
     userSheet = ss.insertSheet("Users");
-    userSheet.appendRow(["Username", "Password", "Name", "Role", "Status"]);
-    userSheet.appendRow(["admin", "admin123", "Administrator", "Admin", "Active"]);
-    userSheet.appendRow(["callcenter", "123456", "Staff Operator", "Operator", "Active"]);
+    userSheet.appendRow(["No", "Username", "Password", "Name", "Role", "Status"]);
+    userSheet.appendRow([1, "admin", "admin123", "Administrator", "Admin", "Active"]);
+    userSheet.appendRow([2, "callcenter", "123456", "Staff Operator", "Operator", "Active"]);
     
     // Format header
-    var headerRange = userSheet.getRange(1, 1, 1, 5);
+    var headerRange = userSheet.getRange(1, 1, 1, 6);
     headerRange.setFontWeight("bold");
     headerRange.setBackground("#1565C0");
     headerRange.setFontColor("#FFFFFF");
@@ -134,9 +134,33 @@ function handleLogin(username, password) {
   var data = userSheet.getDataRange().getValues();
   if (data.length <= 1) {
     // Sheet ada tapi kosong hanya header
-    userSheet.appendRow(["admin", "admin123", "Administrator", "Admin", "Active"]);
+    userSheet.appendRow([1, "admin", "admin123", "Administrator", "Admin", "Active"]);
     data = userSheet.getDataRange().getValues();
   }
+
+  var headers = data[0];
+  var userCol = -1;
+  var passCol = -1;
+  var nameCol = -1;
+  var roleCol = -1;
+  var statusCol = -1;
+
+  // Deteksi kolom secara dinamis berdasarkan nama header
+  for (var j = 0; j < headers.length; j++) {
+    var h = String(headers[j]).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (h === 'username' || h === 'user' || h === 'id') userCol = j;
+    else if (h === 'password' || h === 'pass' || h === 'sandi') passCol = j;
+    else if (h === 'name' || h === 'nama' || h === 'fullname') nameCol = j;
+    else if (h === 'role' || h === 'jabatan' || h === 'level') roleCol = j;
+    else if (h === 'status' || h === 'state') statusCol = j;
+  }
+
+  // Fallback jika header tidak terdeteksi
+  if (userCol === -1) userCol = 0;
+  if (passCol === -1) passCol = 1;
+  if (nameCol === -1) nameCol = 2;
+  if (roleCol === -1) roleCol = 3;
+  if (statusCol === -1) statusCol = 4;
 
   var inputUser = String(username).trim().toLowerCase();
   var inputPass = String(password).trim();
@@ -144,11 +168,11 @@ function handleLogin(username, password) {
   // Cari di data baris (baris 0 adalah header)
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var rowUser = String(row[0]).trim().toLowerCase();
-    var rowPass = String(row[1]).trim();
-    var rowName = String(row[2] || row[0]).trim();
-    var rowRole = String(row[3] || 'User').trim();
-    var rowStatus = String(row[4] || 'Active').trim();
+    var rowUser = String(row[userCol] || '').trim().toLowerCase();
+    var rowPass = String(row[passCol] || '').trim();
+    var rowName = String(row[nameCol] || row[userCol] || '').trim();
+    var rowRole = String(row[roleCol] || 'User').trim();
+    var rowStatus = String(row[statusCol] || 'Active').trim();
 
     if (rowUser === inputUser) {
       if (rowPass === inputPass) {
@@ -164,7 +188,7 @@ function handleLogin(username, password) {
           status: 'success',
           message: 'Login berhasil!',
           user: {
-            username: row[0],
+            username: String(row[userCol]),
             name: rowName,
             role: rowRole,
             status: rowStatus

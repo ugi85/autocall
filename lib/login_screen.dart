@@ -59,23 +59,11 @@ class _LoginScreenState extends State<LoginScreen> {
         queueProvider.setContactsApiUrl(auth.loginApiUrl);
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.check_circle, color: Colors.white),
-              const SizedBox(width: 8),
-              Expanded(child: Text('Selamat datang, ${auth.displayName}!')),
-            ],
-          ),
-          backgroundColor: Colors.green.shade700,
-          behavior: SnackBarBehavior.floating,
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => const QueueScreen(showLoginSuccessWelcome: true),
         ),
       );
-
-      Navigator.of(
-        context,
-      ).pushReplacement(MaterialPageRoute(builder: (_) => const QueueScreen()));
     }
   }
 

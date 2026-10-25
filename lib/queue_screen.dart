@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -9,21 +10,30 @@ import 'widgets/audio_player_sheet.dart';
 import 'widgets/recordings_library_dialog.dart';
 
 class QueueScreen extends StatefulWidget {
-  const QueueScreen({super.key});
+  final bool showLoginSuccessWelcome;
+  const QueueScreen({super.key, this.showLoginSuccessWelcome = false});
 
   @override
   State<QueueScreen> createState() => _QueueScreenState();
 }
 
 class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
+  Timer? _welcomeDialogTimer;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (widget.showLoginSuccessWelcome) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showLoginSuccessWelcomeDialog();
+      });
+    }
   }
 
   @override
   void dispose() {
+    _welcomeDialogTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -1707,6 +1717,61 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
         ],
       ),
     );
+  }
+
+  void _showLoginSuccessWelcomeDialog() {
+    if (!mounted) return;
+    final auth = context.read<AuthProvider>();
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        _welcomeDialogTimer?.cancel();
+        // Beri jeda 3 detik sebelum dialog menghilang secara otomatis
+        _welcomeDialogTimer = Timer(const Duration(seconds: 3), () {
+          if (mounted && Navigator.of(ctx).canPop()) {
+            Navigator.of(ctx).pop();
+          }
+        });
+
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.green, size: 24),
+              SizedBox(width: 8),
+              Text(
+                'Login Berhasil',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Selamat datang, ${auth.displayName}!',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Anda berhasil masuk sebagai ${auth.userRole}. Antrean panggilan siap dijalankan.',
+                style: const TextStyle(fontSize: 13),
+              ),
+            ],
+          ),
+        );
+      },
+    ).then((_) {
+      _welcomeDialogTimer?.cancel();
+    });
   }
 
   Future<void> _fetchContactsFromApiDirect(
