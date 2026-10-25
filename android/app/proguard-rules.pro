@@ -1,5 +1,19 @@
 # Proguard/R8 rules for Auto Call Center & Recording Syncer
 
+# Flutter and Plugin rules (Required for release builds with R8 shrinking)
+-keep class io.flutter.app.** { *; }
+-keep class io.flutter.plugin.** { *; }
+-keep class io.flutter.util.** { *; }
+-keep class io.flutter.view.** { *; }
+-keep class io.flutter.** { *; }
+-keep class io.flutter.plugins.** { *; }
+
+# SharedPreferences plugin rules (Prevents NoSuchMethodError in release mode)
+-keep class io.flutter.plugins.sharedpreferences.** { *; }
+-keep class dev.flutter.plugins.shared_preferences.** { *; }
+-keep class androidx.preference.** { *; }
+-keep class androidx.datastore.** { *; }
+
 # OkHttp3 rules
 -keepattributes Signature
 -keepattributes *Annotation*
