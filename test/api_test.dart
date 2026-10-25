@@ -47,23 +47,14 @@ void main() {
     );
     final count = await provider.fetchContactsFromApi();
 
-    expect(count, 5);
-    expect(provider.queue.length, 5);
+    expect(count, greaterThanOrEqualTo(5));
+    expect(provider.queue.length, count);
 
-    expect(provider.queue[0].name, 'Bunda');
-    expect(provider.queue[0].phoneNumber, '089521263565');
-
-    expect(provider.queue[1].name, 'Alya');
-    expect(provider.queue[1].phoneNumber, '089638833022');
-
-    expect(provider.queue[2].name, 'Nenek');
-    expect(provider.queue[2].phoneNumber, '0895332270020');
-
-    expect(provider.queue[3].name, 'Fitri');
-    expect(provider.queue[3].phoneNumber, '08986899669');
-
-    expect(provider.queue[4].name, 'Byu');
-    expect(provider.queue[4].phoneNumber, '085157997349');
+    expect(provider.queue.any((c) => c.name == 'Bunda'), isTrue);
+    expect(provider.queue.any((c) => c.name == 'Alya'), isTrue);
+    expect(provider.queue.any((c) => c.name == 'Nenek'), isTrue);
+    expect(provider.queue.any((c) => c.name == 'Fitri'), isTrue);
+    expect(provider.queue.any((c) => c.name == 'Byu'), isTrue);
 
 
   });

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'auth_provider.dart';
 import 'call_queue_provider.dart';
+import 'login_screen.dart';
 import 'models/call_item.dart';
 import 'widgets/audio_player_sheet.dart';
 import 'widgets/recordings_library_dialog.dart';
@@ -37,6 +39,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<CallQueueProvider>();
+    final auth = context.watch<AuthProvider>();
     final theme = Theme.of(context);
     final allSystemsReady =
         provider.permissionsStatus['ALL_GRANTED'] == true &&
@@ -53,7 +56,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
             ),
             Text(
-              'Easy Call Center',
+              auth.displayName.isNotEmpty
+                  ? 'Hai, ${auth.displayName}'
+                  : 'Easy Call Center',
               style: TextStyle(
                 fontSize: 11,
                 color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
@@ -95,6 +100,55 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
             tooltip: 'Pengaturan & API',
             icon: const Icon(Icons.settings),
             onPressed: () => _showSettingsDialog(context, provider),
+          ),
+          PopupMenuButton<String>(
+            tooltip: 'Menu Akun (${auth.displayName})',
+            icon: const Icon(Icons.account_circle),
+            onSelected: (val) {
+              if (val == 'logout') {
+                _showLogoutConfirmDialog(context);
+              }
+            },
+            itemBuilder: (ctx) => [
+              PopupMenuItem(
+                enabled: false,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      auth.displayName.isNotEmpty
+                          ? auth.displayName
+                          : 'Operator',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    Text(
+                      'Role: ${auth.userRole}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Colors.black54,
+                      ),
+                    ),
+                    const Divider(),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'logout',
+                child: Row(
+                  children: [
+                    Icon(Icons.logout, color: Colors.red, size: 20),
+                    SizedBox(width: 8),
+                    Text(
+                      'Keluar / Logout',
+                      style: TextStyle(color: Colors.red),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -848,43 +902,75 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildEmptyState(BuildContext context, CallQueueProvider provider) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.playlist_add_check, size: 64, color: Colors.grey.shade400),
-          const SizedBox(height: 12),
-          const Text(
-            'Antrean Panggilan Kosong',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Tambahkan nomor telepon untuk memulai autocall sekuensial.',
-            style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
-          ),
-          const SizedBox(height: 16),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            alignment: WrapAlignment.center,
-            children: [
-              ElevatedButton.icon(
-                onPressed: () => _showAddNumberDialog(context, provider),
-                icon: const Icon(Icons.add),
-                label: const Text('Tambah Nomor'),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 16,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.playlist_add_check,
+                      size: 56,
+                      color: Colors.grey.shade400,
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Antrean Panggilan Kosong',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Tambahkan nomor telepon untuk memulai autocall sekuensial.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      alignment: WrapAlignment.center,
+                      children: [
+                        ElevatedButton.icon(
+                          onPressed: () =>
+                              _showAddNumberDialog(context, provider),
+                          icon: const Icon(Icons.add),
+                          label: const Text('Tambah Nomor'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: provider.isLoadingContactsFromApi
+                              ? null
+                              : () => _fetchContactsFromApiDirect(
+                                  context,
+                                  provider,
+                                ),
+                          icon: const Icon(Icons.cloud_download),
+                          label: const Text('Tarik dari API'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-              OutlinedButton.icon(
-                onPressed: provider.isLoadingContactsFromApi
-                    ? null
-                    : () => _fetchContactsFromApiDirect(context, provider),
-                icon: const Icon(Icons.cloud_download),
-                label: const Text('Tarik dari API'),
-              ),
-            ],
+            ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1567,9 +1653,11 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     provider.setCallTimeoutSeconds(currentTimeout);
                     provider.setCooldownSeconds(currentDelay);
                     provider.setBackendUrl(uploadUrlController.text.trim());
-                    provider.setContactsApiUrl(
-                      contactsUrlController.text.trim(),
-                    );
+                    final contactsUrl = contactsUrlController.text.trim();
+                    provider.setContactsApiUrl(contactsUrl);
+                    if (contactsUrl.isNotEmpty) {
+                      context.read<AuthProvider>().setLoginApiUrl(contactsUrl);
+                    }
                     Navigator.pop(ctx);
                   },
                   child: const Text('Simpan'),
@@ -1579,6 +1667,45 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           },
         );
       },
+    );
+  }
+
+  void _showLogoutConfirmDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.logout, color: Colors.red),
+            SizedBox(width: 8),
+            Text('Konfirmasi Keluar'),
+          ],
+        ),
+        content: const Text(
+          'Apakah Anda yakin ingin keluar dari aplikasi? Sesi akun Anda akan ditutup dan Anda harus login kembali saat membuka menu.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              context.read<AuthProvider>().logout();
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const LoginScreen()),
+                (route) => false,
+              );
+            },
+            child: const Text('Ya, Keluar'),
+          ),
+        ],
+      ),
     );
   }
 

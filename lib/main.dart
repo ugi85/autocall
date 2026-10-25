@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'auth_provider.dart';
 import 'call_queue_provider.dart';
-import 'queue_screen.dart';
+import 'login_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -13,8 +14,11 @@ class AutoCallApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => CallQueueProvider(),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => AuthProvider()),
+        ChangeNotifierProvider(create: (_) => CallQueueProvider()),
+      ],
       child: MaterialApp(
         title: 'AutoCall',
         debugShowCheckedModeBanner: false,
@@ -51,7 +55,7 @@ class AutoCallApp extends StatelessWidget {
           ),
         ),
         themeMode: ThemeMode.system,
-        home: const QueueScreen(),
+        home: const LoginScreen(),
       ),
     );
   }
