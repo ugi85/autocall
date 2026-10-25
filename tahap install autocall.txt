@@ -2,3 +2,5 @@ tahapan install autocall;
 - izinkan sumber tidak dikenal (wa)
 - nonaktifkan Playprotect (playstore)
 - rekam otomatis semua panggilan (phone default)
+- jika autocall assitent terblokir,Buka kunci-izinkan setelan terbatas
+pada aplikasi autocall (titik 3 dikanan atas)
