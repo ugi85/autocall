@@ -590,7 +590,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
             const SizedBox(height: 8),
 
             // Bottom Section: Upload Recording Status
-            _buildUploadStatusRow(item),
+            _buildUploadStatusRow(context, provider, item),
 
             // Audio Player Button if recording exists or call was completed
             if (item.recordingFilePath != null &&
@@ -766,7 +766,11 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildUploadStatusRow(CallItem item) {
+  Widget _buildUploadStatusRow(
+    BuildContext context,
+    CallQueueProvider provider,
+    CallItem item,
+  ) {
     Color color;
     IconData icon;
     String statusTitle;
@@ -776,7 +780,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
         if (item.status == CallStatus.completed) {
           color = Colors.grey;
           icon = Icons.cloud_queue;
-          statusTitle = 'Menunggu pencarian audio OEM...';
+          statusTitle = 'Menunggu pencarian audio di memori HP...';
         } else {
           return const SizedBox.shrink();
         }
@@ -784,24 +788,29 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
       case UploadStatus.waitingRecording:
         color = Colors.blue;
         icon = Icons.hourglass_top;
-        statusTitle = 'Scanning direktori rekaman OEM...';
+        statusTitle = 'Mencari file rekaman panggilan di HP...';
         break;
       case UploadStatus.uploading:
         color = Colors.orange;
         icon = Icons.cloud_upload_outlined;
-        statusTitle = 'Mengunggah rekaman (OkHttp WorkManager)...';
+        statusTitle = 'Mengunggah rekaman ke Google Drive...';
         break;
       case UploadStatus.uploaded:
         color = Colors.teal;
         icon = Icons.cloud_done;
-        statusTitle = 'Rekaman berhasil diunggah ke backend';
+        statusTitle = 'Rekaman tersimpan di Google Drive & Spreadsheet';
         break;
       case UploadStatus.failed:
         color = Colors.red;
         icon = Icons.error_outline;
-        statusTitle = item.uploadMessage ?? 'Gagal upload rekaman';
+        statusTitle = item.uploadMessage ?? 'Gagal upload rekaman ke Drive';
         break;
     }
+
+    final canRetry = item.recordingFilePath != null &&
+        item.recordingFilePath!.isNotEmpty &&
+        item.uploadStatus != UploadStatus.uploaded &&
+        item.uploadStatus != UploadStatus.uploading;
 
     return Container(
       width: double.infinity,
@@ -831,6 +840,22 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
               width: 12,
               height: 12,
               child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          if (canRetry)
+            InkWell(
+              onTap: () => provider.uploadRecordingManually(item.id),
+              child: Padding(
+                padding: const EdgeInsets.only(left: 6),
+                child: Text(
+                  'Upload ke Drive',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.blue.shade700,
+                    decoration: TextDecoration.underline,
+                  ),
+                ),
+              ),
             ),
         ],
       ),
@@ -980,9 +1005,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
             borderRadius: BorderRadius.circular(12),
             onTap: isSyncing
                 ? null
-                : () async {
-                    await provider.fetchContactsFromApi(clearExisting: false);
-                  },
+                : () => _fetchContactsFromApiDirect(context, provider),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               child: Row(

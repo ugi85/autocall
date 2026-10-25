@@ -497,7 +497,7 @@ class CallManager(
 
         // If the call connected and had a duration, enqueue upload worker
         if (duration > 0L) {
-            enqueueUploadWorker(finalNumber, finalName, timestamp, duration, callType)
+            enqueueUploadWorker(finalNumber, finalName, timestamp, duration, callType, localRecordingPath)
         } else {
             Log.i(TAG, "Call duration was 0 (unanswered or busy). Skipping recording upload.")
         }
@@ -522,7 +522,8 @@ class CallManager(
         contactName: String,
         timestamp: Long,
         duration: Long,
-        callType: String
+        callType: String,
+        filePath: String = ""
     ) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -534,7 +535,8 @@ class CallManager(
             UploadRecordingWorker.KEY_CALL_TIMESTAMP to timestamp,
             UploadRecordingWorker.KEY_CALL_DURATION to duration,
             UploadRecordingWorker.KEY_CALL_TYPE to callType,
-            UploadRecordingWorker.KEY_API_URL to backendUploadUrl
+            UploadRecordingWorker.KEY_API_URL to backendUploadUrl,
+            UploadRecordingWorker.EXTRA_FILE_PATH to filePath
         )
 
         val uploadRequest = OneTimeWorkRequestBuilder<UploadRecordingWorker>()

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -27,7 +28,7 @@ class CallQueueProvider with ChangeNotifier {
   static const String defaultGoogleAppsScriptUrl =
       'https://script.google.com/macros/s/AKfycbw-3o-BK7ANO-lm1Ri39MNqmJHP6wt783U-swYptte_lkqIzNTR789YTfwLqpakjjZc/exec';
 
-  String _backendUrl = 'https://your-api-domain.com/api/v1/recordings/upload';
+  String _backendUrl = defaultGoogleAppsScriptUrl;
   String _contactsApiUrl = defaultGoogleAppsScriptUrl;
   bool _isLoadingContactsFromApi = false;
   DateTime? _lastSyncTime;
@@ -118,7 +119,152 @@ class CallQueueProvider with ChangeNotifier {
 
   Future<void> fetchDeviceRecordings() async {
     _deviceRecordings = await _nativeBridge.getAllRecordings();
+    // Cari rekaman yang cocok untuk panggilan completed yang belum memiliki file rekaman
+    for (int i = 0; i < _queue.length; i++) {
+      final item = _queue[i];
+      if (item.status == CallStatus.completed &&
+          (item.recordingFilePath == null || item.recordingFilePath!.isEmpty)) {
+        final match = _findMatchingRecordingForCall(item);
+        if (match != null && match['path'] != null) {
+          final path = match['path'].toString();
+          _queue[i] = item.copyWith(
+            recordingFilePath: path,
+            uploadMessage: 'Rekaman lokal ditemukan',
+          );
+          // Langsung unggah ke Google Drive jika belum terunggah
+          if (item.uploadStatus != UploadStatus.uploaded &&
+              item.uploadStatus != UploadStatus.uploading) {
+            uploadRecordingManually(item.id);
+          }
+        }
+      }
+    }
     notifyListeners();
+  }
+
+  Map<String, dynamic>? _findMatchingRecordingForCall(CallItem item) {
+    if (_deviceRecordings.isEmpty) return null;
+    final cleanPhone = item.phoneNumber.replaceAll(RegExp(r'[^0-9]'), '');
+    final last7 = cleanPhone.length >= 7
+        ? cleanPhone.substring(cleanPhone.length - 7)
+        : cleanPhone;
+    final callMillis = item.callTimestamp?.millisecondsSinceEpoch ?? 0;
+
+    for (final rec in _deviceRecordings) {
+      final name = (rec['name'] ?? '').toString();
+      final path = (rec['path'] ?? '').toString();
+      final modified = (rec['dateModified'] as num?)?.toInt() ?? 0;
+
+      final matchPhone =
+          last7.isNotEmpty && (name.contains(last7) || path.contains(last7));
+      final matchName = item.name.isNotEmpty &&
+          !item.name.startsWith('Kontak ') &&
+          (name.toLowerCase().contains(item.name.toLowerCase()));
+
+      final diff = (modified - callMillis).abs();
+      if ((matchPhone || matchName) && (callMillis == 0 || diff < 180000)) {
+        return rec;
+      }
+    }
+    return null;
+  }
+
+  Future<bool> uploadRecordingManually(String itemId) async {
+    final itemIndex = _queue.indexWhere((e) => e.id == itemId);
+    if (itemIndex == -1) return false;
+    final item = _queue[itemIndex];
+    if (item.recordingFilePath == null || item.recordingFilePath!.isEmpty) {
+      return false;
+    }
+
+    final targetUrl = _backendUrl.isNotEmpty &&
+            !_backendUrl.contains('your-api-domain.com')
+        ? _backendUrl
+        : _contactsApiUrl;
+
+    if (targetUrl.isEmpty || !targetUrl.startsWith('http')) return false;
+
+    final file = File(item.recordingFilePath!);
+    if (!await file.exists()) {
+      _updateItem(
+        itemId,
+        (c) => c.copyWith(
+          uploadStatus: UploadStatus.failed,
+          uploadMessage: 'File rekaman tidak ditemukan di penyimpanan HP',
+        ),
+      );
+      return false;
+    }
+
+    _updateItem(
+      itemId,
+      (c) => c.copyWith(
+        uploadStatus: UploadStatus.uploading,
+        uploadMessage: 'Mengunggah rekaman ke Google Drive...',
+      ),
+    );
+
+    try {
+      final bytes = await file.readAsBytes();
+      final base64Audio = base64Encode(bytes);
+      final fileName = file.uri.pathSegments.isNotEmpty
+          ? file.uri.pathSegments.last
+          : 'Call_${item.phoneNumber}_${DateTime.now().millisecondsSinceEpoch}.m4a';
+
+      final payload = jsonEncode({
+        'action': 'upload_recording',
+        'phone_number': item.phoneNumber,
+        'phone': item.phoneNumber,
+        'name': item.name,
+        'status': item.durationSeconds > 0
+            ? 'TERHUBUNG (${item.durationSeconds}s)'
+            : 'SELESAI',
+        'call_duration': item.durationSeconds,
+        'call_timestamp': item.callTimestamp?.millisecondsSinceEpoch ??
+            DateTime.now().millisecondsSinceEpoch,
+        'file_name': fileName,
+        'audio_base64': base64Audio,
+      });
+
+      final response = await http.post(
+        Uri.parse(targetUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: payload,
+      ).timeout(const Duration(seconds: 90));
+
+      if (response.statusCode >= 200 && response.statusCode < 400) {
+        _updateItem(
+          itemId,
+          (c) => c.copyWith(
+            uploadStatus: UploadStatus.uploaded,
+            uploadMessage: 'Rekaman tersimpan di Google Drive & Spreadsheet',
+          ),
+        );
+        return true;
+      } else {
+        _updateItem(
+          itemId,
+          (c) => c.copyWith(
+            uploadStatus: UploadStatus.failed,
+            uploadMessage: 'Gagal upload HTTP ${response.statusCode}',
+          ),
+        );
+        return false;
+      }
+    } catch (e) {
+      debugPrint('[CallQueueProvider] uploadRecordingManually error: $e');
+      _updateItem(
+        itemId,
+        (c) => c.copyWith(
+          uploadStatus: UploadStatus.failed,
+          uploadMessage: 'Gagal upload: $e',
+        ),
+      );
+      return false;
+    }
   }
 
   // Statistics Getters
@@ -149,7 +295,10 @@ class CallQueueProvider with ChangeNotifier {
       // Load backend URL
       if (prefs.containsKey(_keyBackendUrl)) {
         final savedUrl = prefs.getString(_keyBackendUrl);
-        if (savedUrl != null && savedUrl.isNotEmpty) {
+        if (savedUrl != null &&
+            savedUrl.isNotEmpty &&
+            !savedUrl.contains('your-api-domain.com') &&
+            !savedUrl.contains('backend.com')) {
           _backendUrl = savedUrl;
           await _nativeBridge.setBackendUrl(savedUrl);
         }
@@ -179,11 +328,13 @@ class CallQueueProvider with ChangeNotifier {
         }
       }
 
-      // If backend upload URL is still placeholder, auto-link to contacts API URL
-      if ((_backendUrl.contains('your-api-domain.com') || _backendUrl.isEmpty) &&
-          _contactsApiUrl.isNotEmpty) {
+      // Pastikan backend upload rekaman selalu terhubung ke URL Google Apps Script yang aktif
+      if (_backendUrl.contains('your-api-domain.com') ||
+          _backendUrl.contains('backend.com') ||
+          _backendUrl.isEmpty) {
         _backendUrl = _contactsApiUrl;
         await _nativeBridge.setBackendUrl(_contactsApiUrl);
+        await prefs.setString(_keyBackendUrl, _contactsApiUrl);
       }
 
       // Load queue
@@ -358,6 +509,11 @@ class CallQueueProvider with ChangeNotifier {
             : (duration > 0 ? 'GAGAL (${duration}s)' : 'TIDAK DIANGKAT / SIBUK'),
         duration: duration,
       );
+
+      // Jika panggilan sukses terhubung dan file rekaman lokal ditemukan, langsung unggah ke Google Drive
+      if (isCallSuccess && recordingPath.isNotEmpty) {
+        uploadRecordingManually(targetId);
+      }
 
       // Also refresh the device recordings library
       fetchDeviceRecordings();
@@ -752,13 +908,13 @@ class CallQueueProvider with ChangeNotifier {
 
   Future<void> setContactsApiUrl(String url) async {
     final clean = sanitizeApiUrl(url);
-    _contactsApiUrl = clean;
-    if ((_backendUrl.contains('your-api-domain.com') || _backendUrl.isEmpty) && clean.isNotEmpty) {
+    if (clean.isNotEmpty) {
+      _contactsApiUrl = clean;
       _backendUrl = clean;
       await _nativeBridge.setBackendUrl(clean);
+      notifyListeners();
+      _saveSettingsToStorage();
     }
-    notifyListeners();
-    _saveSettingsToStorage();
   }
 
   /// Sends call status update to Google Spreadsheet for unanswered / busy calls

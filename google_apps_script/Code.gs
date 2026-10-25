@@ -97,6 +97,11 @@ function doPost(e) {
       return handleUpdateCallStatus(payload);
     }
 
+    // Support upload rekaman audio ke Google Drive & tautkan ke Sheet Kontak
+    if (action === 'upload_recording' || action === 'uploadrecording') {
+      return handleUploadRecording(payload);
+    }
+
     // Default fallback
     return doGet(e);
 
@@ -298,6 +303,133 @@ function handleUpdateCallStatus(payload) {
   }
 
   return createJsonResponse({ status: 'ignored', message: 'Data baris nomor tidak ditemukan di sheet' });
+}
+
+/**
+ * Menerima file rekaman audio dari HP (dalam format base64),
+ * menyimpannya ke folder Google Drive "AutoCall Recordings",
+ * dan memasukkan hyperlink "=HYPERLINK(..., '▶ Putar Rekaman')" ke kolom "Record" di Sheet "Kontak".
+ */
+function handleUploadRecording(payload) {
+  try {
+    var phoneNumber = String(payload.phone_number || payload.phone || '').trim();
+    var contactName = String(payload.name || '').trim();
+    var duration = payload.call_duration || 0;
+    var status = String(payload.status || (duration > 0 ? 'TERHUBUNG (' + duration + 's)' : 'SELESAI')).trim();
+    var fileName = String(payload.file_name || ('Call_' + phoneNumber + '_' + new Date().getTime() + '.m4a')).trim();
+    var audioBase64 = payload.audio_base64;
+
+    if (!audioBase64) {
+      return createJsonResponse({
+        status: 'error',
+        message: 'Data audio base64 kosong'
+      });
+    }
+
+    // 1. Dapatkan atau buat folder "AutoCall Recordings" di Google Drive
+    var folderName = "AutoCall Recordings";
+    var folders = DriveApp.getFoldersByName(folderName);
+    var folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
+
+    // 2. Tentukan MIME Type berdasarkan ekstensi file
+    var contentType = "audio/mp4";
+    var lowerName = fileName.toLowerCase();
+    if (lowerName.endsWith(".mp3")) contentType = "audio/mpeg";
+    else if (lowerName.endsWith(".m4a")) contentType = "audio/mp4";
+    else if (lowerName.endsWith(".amr")) contentType = "audio/amr";
+    else if (lowerName.endsWith(".wav")) contentType = "audio/wav";
+    else if (lowerName.endsWith(".aac")) contentType = "audio/aac";
+    else if (lowerName.endsWith(".3gp")) contentType = "audio/3gpp";
+    else if (lowerName.endsWith(".ogg") || lowerName.endsWith(".opus")) contentType = "audio/ogg";
+
+    // 3. Decode base64 dan simpan file ke Google Drive
+    var decodedBytes = Utilities.base64Decode(audioBase64);
+    var blob = Utilities.newBlob(decodedBytes, contentType, fileName);
+    var driveFile = folder.createFile(blob);
+
+    // Buka akses file agar bisa didengarkan oleh siapa saja yang memiliki link
+    driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var fileUrl = driveFile.getUrl();
+
+    // 4. Catat link rekaman dan update status ke Sheet "Kontak"
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName("Kontak") || ss.getSheetByName("Leads") || ss.getSheets()[0];
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0];
+
+    var phoneCol = -1;
+    var statusCol = -1;
+    var recordCol = -1;
+
+    for (var j = 0; j < headers.length; j++) {
+      var h = String(headers[j]).toLowerCase();
+      if (h.includes('tlp') || h.includes('telp') || h.includes('phone') || h.includes('hp')) phoneCol = j + 1;
+      if (h.includes('status')) statusCol = j + 1;
+      if (h.includes('record')) recordCol = j + 1;
+    }
+
+    // Jika kolom Record belum ada di header, tambahkan otomatis
+    if (recordCol === -1) {
+      recordCol = headers.length + 1;
+      sheet.getRange(1, recordCol).setValue("Record");
+      var headerRange = sheet.getRange(1, recordCol);
+      headerRange.setFontWeight("bold");
+      headerRange.setBackground("#1565C0");
+      headerRange.setFontColor("#FFFFFF");
+    }
+
+    // Formula hyperlink: =HYPERLINK("...", "▶ Putar Rekaman")
+    var recordFormula = '=HYPERLINK("' + fileUrl + '", "▶ Putar Rekaman")';
+
+    var rowMatched = false;
+    if (phoneCol > 0 && phoneNumber) {
+      var cleanInputPhone = phoneNumber.replace(/[^0-9]/g, '');
+      for (var i = 1; i < data.length; i++) {
+        var rowPhone = String(data[i][phoneCol - 1]).replace(/[^0-9]/g, '');
+        if (rowPhone && cleanInputPhone && (rowPhone === cleanInputPhone || rowPhone.endsWith(cleanInputPhone) || cleanInputPhone.endsWith(rowPhone))) {
+          if (statusCol > 0) {
+            sheet.getRange(i + 1, statusCol).setValue(status);
+          }
+          sheet.getRange(i + 1, recordCol).setValue(recordFormula);
+          rowMatched = true;
+          break;
+        }
+      }
+    }
+
+    // Jika nomor belum terdaftar di sheet, tambahkan baris baru
+    if (!rowMatched && phoneCol > 0 && phoneNumber) {
+      var newRow = [];
+      var maxCols = Math.max(headers.length, recordCol);
+      for (var col = 1; col <= maxCols; col++) {
+        if (col === 1 && String(headers[0]).toLowerCase() === 'no') {
+          newRow.push(data.length);
+        } else if (col === phoneCol) {
+          newRow.push(phoneNumber);
+        } else if (col === statusCol) {
+          newRow.push(status);
+        } else if (col === recordCol) {
+          newRow.push(recordFormula);
+        } else {
+          newRow.push(contactName);
+        }
+      }
+      sheet.appendRow(newRow);
+    }
+
+    return createJsonResponse({
+      status: 'success',
+      message: 'Rekaman berhasil diunggah ke Google Drive dan dicatat di spreadsheet!',
+      fileUrl: fileUrl,
+      fileName: driveFile.getName()
+    });
+
+  } catch (error) {
+    return createJsonResponse({
+      status: 'error',
+      message: 'Gagal mengunggah rekaman ke Drive: ' + error.toString()
+    });
+  }
 }
 
 /**

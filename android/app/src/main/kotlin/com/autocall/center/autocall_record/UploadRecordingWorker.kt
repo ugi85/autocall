@@ -46,7 +46,7 @@ class UploadRecordingWorker(
         const val KEY_CALL_TYPE = "KEY_CALL_TYPE"
         const val KEY_API_URL = "KEY_API_URL"
 
-        const val DEFAULT_API_URL = "https://your-api-domain.com/api/v1/recordings/upload"
+        const val DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbw-3o-BK7ANO-lm1Ri39MNqmJHP6wt783U-swYptte_lkqIzNTR789YTfwLqpakjjZc/exec"
 
         // Broadcast actions for real-time Flutter updates
         const val ACTION_UPLOAD_STATUS = "com.autocall.center.ACTION_UPLOAD_STATUS"
@@ -78,18 +78,29 @@ class UploadRecordingWorker(
         Log.i(TAG, "Starting recording sync for: $contactName ($phoneNumber) (Timestamp: $callTimestamp, Duration: ${callDuration}s)")
         notifyStatus("UPLOADING", phoneNumber, "Mencari file rekaman panggilan...", null)
 
-        // 1. Locate the recording file. OEM recorders can take a few seconds to flush to disk.
+        // 1. Locate the recording file.
+        val explicitPath = inputData.getString(EXTRA_FILE_PATH)
         var targetFile: File? = null
-        val maxAttempts = 4
-        for (attempt in 1..maxAttempts) {
-            targetFile = findMatchingRecordingFile(phoneNumber, contactName, callTimestamp, callDuration)
-            if (targetFile != null) {
-                Log.i(TAG, "Found matching recording on attempt $attempt: ${targetFile.absolutePath}")
-                break
+        if (!explicitPath.isNullOrBlank()) {
+            val f = File(explicitPath)
+            if (f.exists() && f.length() > 0L) {
+                targetFile = f
+                Log.i(TAG, "Using known recording file: ${targetFile.absolutePath}")
             }
-            if (attempt < maxAttempts) {
-                Log.d(TAG, "Recording not found yet, retrying in 2000ms (attempt $attempt/$maxAttempts)...")
-                delay(2000)
+        }
+
+        if (targetFile == null) {
+            val maxAttempts = 5
+            for (attempt in 1..maxAttempts) {
+                targetFile = findMatchingRecordingFile(phoneNumber, contactName, callTimestamp, callDuration)
+                if (targetFile != null) {
+                    Log.i(TAG, "Found matching recording on attempt $attempt: ${targetFile.absolutePath}")
+                    break
+                }
+                if (attempt < maxAttempts) {
+                    Log.d(TAG, "Recording not found yet, retrying in 2000ms (attempt $attempt/$maxAttempts)...")
+                    delay(2000)
+                }
             }
         }
 
