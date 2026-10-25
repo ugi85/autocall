@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -87,24 +88,24 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: provider.isLoadingContactsFromApi
-                ? 'Sedang menyinkronkan spreadsheet...'
-                : 'Sinkronkan Spreadsheet (Tarik layar atau klik)',
-            icon: provider.isLoadingContactsFromApi
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Icon(Icons.sync),
-            onPressed: provider.isLoadingContactsFromApi
-                ? null
-                : () => _fetchContactsFromApiDirect(context, provider),
-          ),
+          // IconButton(
+          //   tooltip: provider.isLoadingContactsFromApi
+          //       ? 'Sedang menyinkronkan...'
+          //       : 'Sinkronkan(Tarik layar atau klik)',
+          //   icon: provider.isLoadingContactsFromApi
+          //       ? const SizedBox(
+          //           width: 20,
+          //           height: 20,
+          //           child: CircularProgressIndicator(
+          //             strokeWidth: 2,
+          //             color: Colors.white,
+          //           ),
+          //         )
+          //       : const Icon(Icons.sync),
+          //   onPressed: provider.isLoadingContactsFromApi
+          //       ? null
+          //       : () => _fetchContactsFromApiDirect(context, provider),
+          // ),
           IconButton(
             tooltip: 'Pustaka Rekaman HP',
             icon: const Icon(Icons.library_music),
@@ -228,11 +229,11 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showAddNumberDialog(context, provider),
-        icon: const Icon(Icons.person_add_alt_1),
-        label: const Text('Tambah Nomor'),
-      ),
+      // floatingActionButton: FloatingActionButton.extended(
+      //   onPressed: () => _showAddNumberDialog(context, provider),
+      //   icon: const Icon(Icons.person_add_alt_1),
+      //   label: const Text('Tambah Nomor'),
+      // ),
     );
   }
 
@@ -964,12 +965,14 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
               isSyncing
                   ? 'Menyinkronkan kontak dari spreadsheet...'
                   : (lastSyncStr != null
-                      ? 'Sinkron: $lastSyncStr (${provider.queue.length} kontak) • Tarik layar untuk refresh'
-                      : 'Tarik layar ke bawah (Pull-to-Refresh) untuk sinkron kontak'),
+                        ? 'Sinkron: $lastSyncStr (${provider.queue.length} kontak) • Tarik layar untuk refresh'
+                        : 'Tarik layar ke bawah (Pull-to-Refresh) untuk sinkron kontak'),
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
-                color: isSyncing ? Colors.blue.shade800 : Colors.blueGrey.shade700,
+                color: isSyncing
+                    ? Colors.blue.shade800
+                    : Colors.blueGrey.shade700,
               ),
             ),
           ),
@@ -1745,41 +1748,41 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     const SizedBox(height: 16),
 
                     // 3. API Daftar Kontak Database
-                    const Text(
-                      'URL API Daftar Kontak :',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: contactsUrlController,
-                      decoration: InputDecoration(
-                        hintText: 'https://domain.com/api/v1/contacts',
-                        prefixIcon: const Icon(Icons.contacts),
-                        suffixIcon: IconButton(
-                          icon: const Icon(Icons.clear),
-                          onPressed: () => contactsUrlController.clear(),
-                        ),
-                        border: const OutlineInputBorder(),
-                      ),
-                    ),
-                    _buildApiGuideCard(context),
-                    const SizedBox(height: 16),
+                    // const Text(
+                    //   'URL API Daftar Kontak :',
+                    //   style: TextStyle(fontWeight: FontWeight.bold),
+                    // ),
+                    // const SizedBox(height: 6),
+                    // TextField(
+                    //   controller: contactsUrlController,
+                    //   decoration: InputDecoration(
+                    //     hintText: 'https://domain.com/api/v1/contacts',
+                    //     prefixIcon: const Icon(Icons.contacts),
+                    //     suffixIcon: IconButton(
+                    //       icon: const Icon(Icons.clear),
+                    //       onPressed: () => contactsUrlController.clear(),
+                    //     ),
+                    //     border: const OutlineInputBorder(),
+                    //   ),
+                    // ),
+                    // _buildApiGuideCard(context),
+                    // const SizedBox(height: 16),
 
                     // 4. Backend Upload API
-                    const Text(
-                      'Endpoint Backend Upload Rekaman API:',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: uploadUrlController,
-                      decoration: const InputDecoration(
-                        hintText:
-                            'https://backend.com/api/v1/recordings/upload',
-                        prefixIcon: Icon(Icons.cloud_upload),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
+                    // const Text(
+                    //   'Endpoint Backend Upload Rekaman API:',
+                    //   style: TextStyle(fontWeight: FontWeight.bold),
+                    // ),
+                    // const SizedBox(height: 6),
+                    // TextField(
+                    //   controller: uploadUrlController,
+                    //   decoration: const InputDecoration(
+                    //     hintText:
+                    //         'https://backend.com/api/v1/recordings/upload',
+                    //     prefixIcon: Icon(Icons.cloud_upload),
+                    //     border: OutlineInputBorder(),
+                    //   ),
+                    // ),
                   ],
                 ),
               ),
