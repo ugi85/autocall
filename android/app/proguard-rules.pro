@@ -7,6 +7,8 @@
 -keep class io.flutter.view.** { *; }
 -keep class io.flutter.** { *; }
 -keep class io.flutter.plugins.** { *; }
+-dontwarn com.google.android.play.core.**
+-dontwarn io.flutter.embedding.engine.deferredcomponents.**
 
 # SharedPreferences plugin rules (Prevents NoSuchMethodError in release mode)
 -keep class io.flutter.plugins.sharedpreferences.** { *; }
