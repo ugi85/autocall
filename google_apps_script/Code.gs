@@ -181,15 +181,23 @@ function handleLogin(username, password) {
     var rowUser = String(row[userCol] || '').trim().toLowerCase();
     var rowPass = String(row[passCol] || '').trim();
     var rowName = String(row[nameCol] || row[userCol] || '').trim();
-    var rowRole = String(row[roleCol] || 'User').trim();
-    var rowStatus = String(row[statusCol] || 'Active').trim();
+    var rawStatus = row[statusCol];
+    var rowStatus = (rawStatus !== undefined && rawStatus !== null && String(rawStatus).trim() !== '')
+        ? String(rawStatus).trim()
+        : 'active';
 
     if (rowUser === inputUser) {
       if (rowPass === inputPass) {
-        if (rowStatus.toLowerCase() === 'inactive' || rowStatus.toLowerCase() === 'blocked') {
+        // Cek status keaktifan akun:
+        // Hanya akun dengan status 'active' atau 'aktif' yang diizinkan masuk.
+        // Jika diisi 'inactive', 'nonaktif', 'tidak aktif', 'blocked', 'suspend', dll., tolak login.
+        var cleanStatus = rowStatus.toLowerCase().replace(/[\s_-]/g, '');
+        var isActive = (cleanStatus === 'active' || cleanStatus === 'aktif' || cleanStatus === '1' || cleanStatus === 'true');
+
+        if (!isActive) {
           return createJsonResponse({
             status: 'error',
-            message: 'Akun Anda dinonaktifkan. Silakan hubungi administrator.'
+            message: 'Akun Anda sedang dinonaktifkan (Status: ' + rowStatus + '). Silakan hubungi administrator.'
           });
         }
 
