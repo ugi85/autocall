@@ -30,8 +30,6 @@ class CallQueueProvider with ChangeNotifier {
   String _backendUrl = 'https://your-api-domain.com/api/v1/recordings/upload';
   String _contactsApiUrl = defaultGoogleAppsScriptUrl;
   bool _isLoadingContactsFromApi = false;
-  Timer? _autoSyncTimer;
-  bool _isAutoSyncEnabled = true;
   DateTime? _lastSyncTime;
 
   // Call Timeout Configuration (Auto-hangup jika tidak diangkat, sibuk, atau tidak aktif)
@@ -72,7 +70,6 @@ class CallQueueProvider with ChangeNotifier {
   String get backendUrl => _backendUrl;
   String get contactsApiUrl => _contactsApiUrl;
   bool get isLoadingContactsFromApi => _isLoadingContactsFromApi;
-  bool get isAutoSyncEnabled => _isAutoSyncEnabled;
   DateTime? get lastSyncTime => _lastSyncTime;
 
   int get callTimeoutSeconds => _callTimeoutSeconds;
@@ -81,32 +78,6 @@ class CallQueueProvider with ChangeNotifier {
       (_callTimeoutSeconds - _callSecondsElapsed).clamp(0, _callTimeoutSeconds);
   bool get isCallTimerRunning => _isCallTimerRunning;
   List<Map<String, dynamic>> get deviceRecordings => _deviceRecordings;
-
-  void setAutoSyncEnabled(bool enabled) {
-    _isAutoSyncEnabled = enabled;
-    if (enabled) {
-      startAutoSync();
-    } else {
-      stopAutoSync();
-    }
-    notifyListeners();
-  }
-
-  void startAutoSync({int intervalSeconds = 15}) {
-    _autoSyncTimer?.cancel();
-    if (!_isAutoSyncEnabled) return;
-    _autoSyncTimer = Timer.periodic(Duration(seconds: intervalSeconds), (_) {
-      if (!_isQueueRunning &&
-          !_isLoadingContactsFromApi &&
-          _contactsApiUrl.isNotEmpty) {
-        syncContactsSilently();
-      }
-    });
-  }
-
-  void stopAutoSync() {
-    _autoSyncTimer?.cancel();
-  }
 
   Future<int> syncContactsSilently() async {
     if (_isLoadingContactsFromApi) return 0;
@@ -234,10 +205,9 @@ class CallQueueProvider with ChangeNotifier {
         _queue = [];
       }
 
-      // Sinkronisasi kontak otomatis secara realtime saat aplikasi pertama kali siap
-      if (_contactsApiUrl.isNotEmpty) {
+      // Sinkronisasi kontak awal jika antrean di HP masih kosong
+      if (_queue.isEmpty && _contactsApiUrl.isNotEmpty) {
         syncContactsSilently();
-        startAutoSync(intervalSeconds: 15);
       }
       notifyListeners();
     } catch (e) {
@@ -1001,19 +971,24 @@ class CallQueueProvider with ChangeNotifier {
           if (existingIdx != -1) {
             final existing = _queue[existingIdx];
             // Update nama dan status jika belum aktif dipanggil
+            // PENTING: Jika kontak berstatus pending (misalnya dikembalikan ke antrean oleh user),
+            // JANGAN timpa kembali ke status lama spreadsheet agar tidak "mental"!
+            CallStatus updatedStatus = existing.status;
             if (existing.status != CallStatus.dialing &&
                 existing.status != CallStatus.inCall) {
-              _queue[existingIdx] = existing.copyWith(
-                name: name.isNotEmpty ? name : existing.name,
-                status: (existing.status == CallStatus.pending &&
-                        parsedStatus != CallStatus.pending)
-                    ? parsedStatus
-                    : (rawStatus.isEmpty &&
-                            existing.status != CallStatus.pending)
-                        ? CallStatus.pending
-                        : existing.status,
-              );
+              if (existing.status != CallStatus.pending) {
+                if (rawStatus.isEmpty) {
+                  updatedStatus = CallStatus.pending;
+                } else if (parsedStatus != CallStatus.pending) {
+                  updatedStatus = parsedStatus;
+                }
+              }
             }
+
+            _queue[existingIdx] = existing.copyWith(
+              name: name.isNotEmpty ? name : existing.name,
+              status: updatedStatus,
+            );
             syncedCount++;
           } else {
             // Nomor baru dari spreadsheet: tambahkan ke antrean
@@ -1111,7 +1086,6 @@ class CallQueueProvider with ChangeNotifier {
 
   @override
   void dispose() {
-    _autoSyncTimer?.cancel();
     _cancelCooldownTimer();
     _cancelCallTimeoutTimer();
     _telephonySubscription?.cancel();

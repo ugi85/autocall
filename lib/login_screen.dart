@@ -53,13 +53,14 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
 
     if (success) {
-      // Sinkronkan URL kontak & mulai penarikan kontak otomatis dari Google Spreadsheet
+      // Sinkronkan URL kontak & muat kontak jika antrean kosong
       final queueProvider = context.read<CallQueueProvider>();
       if (auth.loginApiUrl.isNotEmpty && queueProvider.contactsApiUrl != auth.loginApiUrl) {
         queueProvider.setContactsApiUrl(auth.loginApiUrl);
       }
-      queueProvider.syncContactsSilently();
-      queueProvider.startAutoSync(intervalSeconds: 15);
+      if (queueProvider.queue.isEmpty) {
+        queueProvider.syncContactsSilently();
+      }
 
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(

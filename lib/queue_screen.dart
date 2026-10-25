@@ -34,9 +34,10 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           provider.contactsApiUrl != auth.loginApiUrl) {
         provider.setContactsApiUrl(auth.loginApiUrl);
       }
-      // Mulai sinkronisasi otomatis secara realtime dari spreadsheet
-      provider.startAutoSync(intervalSeconds: 15);
-      provider.syncContactsSilently();
+      // Tarik data kontak awal dari spreadsheet jika antrean masih kosong
+      if (provider.queue.isEmpty) {
+        provider.syncContactsSilently();
+      }
     });
   }
 
@@ -50,13 +51,8 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // Re-verify permissions dan sinkronkan kontak saat kembali ke aplikasi
-      final provider = context.read<CallQueueProvider>();
-      provider.checkPermissions();
-      provider.syncContactsSilently();
-      provider.startAutoSync(intervalSeconds: 15);
-    } else if (state == AppLifecycleState.paused) {
-      context.read<CallQueueProvider>().stopAutoSync();
+      // Re-verify permissions dan accessibility status
+      context.read<CallQueueProvider>().checkPermissions();
     }
   }
 
@@ -94,9 +90,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           IconButton(
             tooltip: provider.isLoadingContactsFromApi
                 ? 'Sedang menyinkronkan spreadsheet...'
-                : (provider.lastSyncTime != null
-                    ? 'Sinkronisasi Spreadsheet Aktif (Klik untuk refresh)'
-                    : 'Sinkronisasi Otomatis Spreadsheet'),
+                : 'Sinkronkan Spreadsheet (Tarik layar atau klik)',
             icon: provider.isLoadingContactsFromApi
                 ? const SizedBox(
                     width: 20,
@@ -106,25 +100,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                       color: Colors.white,
                     ),
                   )
-                : Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      const Icon(Icons.cloud_sync),
-                      if (provider.isAutoSyncEnabled)
-                        Positioned(
-                          right: -1,
-                          top: -1,
-                          child: Container(
-                            width: 8,
-                            height: 8,
-                            decoration: const BoxDecoration(
-                              color: Colors.greenAccent,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
+                : const Icon(Icons.sync),
             onPressed: provider.isLoadingContactsFromApi
                 ? null
                 : () => _fetchContactsFromApiDirect(context, provider),
@@ -968,22 +944,19 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
       decoration: BoxDecoration(
         color: isSyncing
             ? Colors.blue.withValues(alpha: 0.08)
-            : Colors.green.withValues(alpha: 0.08),
+            : Colors.grey.withValues(alpha: 0.08),
         border: Border(
           bottom: BorderSide(
-            color: (isSyncing ? Colors.blue : Colors.green).withValues(alpha: 0.2),
+            color: (isSyncing ? Colors.blue : Colors.grey.shade300),
           ),
         ),
       ),
       child: Row(
         children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: isSyncing ? Colors.blue : Colors.green,
-            ),
+          Icon(
+            isSyncing ? Icons.sync : Icons.cloud_done_outlined,
+            size: 14,
+            color: isSyncing ? Colors.blue : Colors.teal,
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -991,12 +964,12 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
               isSyncing
                   ? 'Menyinkronkan kontak dari spreadsheet...'
                   : (lastSyncStr != null
-                      ? 'Realtime Sheet Aktif • Sinkron: $lastSyncStr (${provider.queue.length} kontak)'
-                      : 'Realtime Sheet Aktif • Menunggu data'),
+                      ? 'Sinkron: $lastSyncStr (${provider.queue.length} kontak) • Tarik layar untuk refresh'
+                      : 'Tarik layar ke bawah (Pull-to-Refresh) untuk sinkron kontak'),
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
-                color: isSyncing ? Colors.blue.shade800 : Colors.green.shade800,
+                color: isSyncing ? Colors.blue.shade800 : Colors.blueGrey.shade700,
               ),
             ),
           ),
@@ -1013,9 +986,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
-                    Icons.sync,
+                    Icons.refresh,
                     size: 13,
-                    color: isSyncing ? Colors.blue : Colors.green.shade700,
+                    color: isSyncing ? Colors.blue : Colors.teal.shade700,
                   ),
                   const SizedBox(width: 3),
                   Text(
@@ -1023,7 +996,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
-                      color: isSyncing ? Colors.blue : Colors.green.shade700,
+                      color: isSyncing ? Colors.blue : Colors.teal.shade700,
                     ),
                   ),
                 ],
