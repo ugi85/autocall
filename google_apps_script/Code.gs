@@ -56,7 +56,12 @@ function doGet(e) {
       });
     }
 
-    // 3. DEFAULT: PENARIKAN DATA KONTAK / LEADS
+    // 3. ENDPOINT UPDATE STATUS PANGGILAN (GET Fallback)
+    if (action === 'update_status' || action === 'updatestatus') {
+      return handleUpdateCallStatus(params);
+    }
+
+    // 4. DEFAULT: PENARIKAN DATA KONTAK / LEADS
     // Jika tidak ada action atau action=getleads / contacts, kembalikan daftar nomor
     return handleGetLeads();
 
@@ -226,6 +231,17 @@ function handleGetLeads() {
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
+
+    // Filter baris kosong: pastikan baris memiliki data (tidak kosong semua)
+    var hasContent = false;
+    for (var k = 0; k < row.length; k++) {
+      if (String(row[k]).trim() !== '') {
+        hasContent = true;
+        break;
+      }
+    }
+    if (!hasContent) continue;
+
     var obj = {};
     for (var j = 0; j < headers.length; j++) {
       var headerKey = String(headers[j]).trim();
@@ -245,7 +261,7 @@ function handleUpdateCallStatus(payload) {
   var sheet = ss.getSheetByName("Kontak") || ss.getSheetByName("Leads") || ss.getSheets()[0];
   var data = sheet.getDataRange().getValues();
 
-  var phone = String(payload.phone || payload.phoneNumber || '').trim();
+  var phone = String(payload.phone || payload.phoneNumber || payload.phone_number || '').trim();
   var status = String(payload.status || '').trim();
   var record = String(payload.recordUrl || payload.record || '').trim();
 
@@ -261,7 +277,7 @@ function handleUpdateCallStatus(payload) {
 
   for (var j = 0; j < headers.length; j++) {
     var h = String(headers[j]).toLowerCase();
-    if (h.includes('tlp') || h.includes('telp') || h.includes('phone')) phoneCol = j + 1;
+    if (h.includes('tlp') || h.includes('telp') || h.includes('phone') || h.includes('hp')) phoneCol = j + 1;
     if (h.includes('status')) statusCol = j + 1;
     if (h.includes('record')) recordCol = j + 1;
   }

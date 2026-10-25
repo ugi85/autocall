@@ -24,11 +24,20 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (widget.showLoginSuccessWelcome) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (widget.showLoginSuccessWelcome) {
         _showLoginSuccessWelcomeDialog();
-      });
-    }
+      }
+      final provider = context.read<CallQueueProvider>();
+      final auth = context.read<AuthProvider>();
+      if (auth.loginApiUrl.isNotEmpty &&
+          provider.contactsApiUrl != auth.loginApiUrl) {
+        provider.setContactsApiUrl(auth.loginApiUrl);
+      }
+      // Mulai sinkronisasi otomatis secara realtime dari spreadsheet
+      provider.startAutoSync(intervalSeconds: 15);
+      provider.syncContactsSilently();
+    });
   }
 
   @override
@@ -41,8 +50,13 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // Re-verify permissions and accessibility status upon returning from Settings
-      context.read<CallQueueProvider>().checkPermissions();
+      // Re-verify permissions dan sinkronkan kontak saat kembali ke aplikasi
+      final provider = context.read<CallQueueProvider>();
+      provider.checkPermissions();
+      provider.syncContactsSilently();
+      provider.startAutoSync(intervalSeconds: 15);
+    } else if (state == AppLifecycleState.paused) {
+      context.read<CallQueueProvider>().stopAutoSync();
     }
   }
 
@@ -78,7 +92,11 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
         ),
         actions: [
           IconButton(
-            tooltip: 'Tarik Kontak API Database',
+            tooltip: provider.isLoadingContactsFromApi
+                ? 'Sedang menyinkronkan spreadsheet...'
+                : (provider.lastSyncTime != null
+                    ? 'Sinkronisasi Spreadsheet Aktif (Klik untuk refresh)'
+                    : 'Sinkronisasi Otomatis Spreadsheet'),
             icon: provider.isLoadingContactsFromApi
                 ? const SizedBox(
                     width: 20,
@@ -88,7 +106,25 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                       color: Colors.white,
                     ),
                   )
-                : const Icon(Icons.cloud_download),
+                : Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      const Icon(Icons.cloud_sync),
+                      if (provider.isAutoSyncEnabled)
+                        Positioned(
+                          right: -1,
+                          top: -1,
+                          child: Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                              color: Colors.greenAccent,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
             onPressed: provider.isLoadingContactsFromApi
                 ? null
                 : () => _fetchContactsFromApiDirect(context, provider),
@@ -175,6 +211,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           // 3. Metrics Summary
           _buildMetricsOverview(context, provider),
 
+          // 3b. Realtime Sync Status Bar
+          _buildSyncStatusBar(context, provider),
+
           // 4. Active Call Timeout Banner (Auto Hangup jika tidak angkat/sibuk)
           if (provider.isCallTimerRunning &&
               provider.currentProcessingId != null)
@@ -188,22 +227,28 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
 
           const Divider(height: 1),
 
-          // 6. Main Queue List
+          // 6. Main Queue List dengan RefreshIndicator untuk tarik data otomatis
           Expanded(
-            child: provider.queue.isEmpty
-                ? _buildEmptyState(context, provider)
-                : ListView.separated(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 12,
+            child: RefreshIndicator(
+              onRefresh: () async {
+                await provider.fetchContactsFromApi(clearExisting: false);
+              },
+              child: provider.queue.isEmpty
+                  ? _buildEmptyState(context, provider)
+                  : ListView.separated(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                      itemCount: provider.queue.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 10),
+                      itemBuilder: (context, index) {
+                        final item = provider.queue[index];
+                        return _buildCallCard(context, provider, item, index);
+                      },
                     ),
-                    itemCount: provider.queue.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 10),
-                    itemBuilder: (context, index) {
-                      final item = provider.queue[index];
-                      return _buildCallCard(context, provider, item, index);
-                    },
-                  ),
+            ),
           ),
         ],
       ),
@@ -911,7 +956,124 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
     return const SizedBox.shrink();
   }
 
+  Widget _buildSyncStatusBar(BuildContext context, CallQueueProvider provider) {
+    final isSyncing = provider.isLoadingContactsFromApi;
+    final lastSync = provider.lastSyncTime;
+    final lastSyncStr = lastSync != null
+        ? '${lastSync.hour.toString().padLeft(2, '0')}:${lastSync.minute.toString().padLeft(2, '0')}:${lastSync.second.toString().padLeft(2, '0')}'
+        : null;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      decoration: BoxDecoration(
+        color: isSyncing
+            ? Colors.blue.withValues(alpha: 0.08)
+            : Colors.green.withValues(alpha: 0.08),
+        border: Border(
+          bottom: BorderSide(
+            color: (isSyncing ? Colors.blue : Colors.green).withValues(alpha: 0.2),
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: isSyncing ? Colors.blue : Colors.green,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              isSyncing
+                  ? 'Menyinkronkan kontak dari spreadsheet...'
+                  : (lastSyncStr != null
+                      ? 'Realtime Sheet Aktif • Sinkron: $lastSyncStr (${provider.queue.length} kontak)'
+                      : 'Realtime Sheet Aktif • Menunggu data'),
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                color: isSyncing ? Colors.blue.shade800 : Colors.green.shade800,
+              ),
+            ),
+          ),
+          InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: isSyncing
+                ? null
+                : () async {
+                    await provider.fetchContactsFromApi(clearExisting: false);
+                  },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.sync,
+                    size: 13,
+                    color: isSyncing ? Colors.blue : Colors.green.shade700,
+                  ),
+                  const SizedBox(width: 3),
+                  Text(
+                    'Sync',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: isSyncing ? Colors.blue : Colors.green.shade700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildEmptyState(BuildContext context, CallQueueProvider provider) {
+    if (provider.isLoadingContactsFromApi) {
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: const Center(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 16),
+                      Text(
+                        'Menghubungkan ke Google Spreadsheet...',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(height: 8),
+                      Text(
+                        'Mengambil data kontak otomatis dari sheet "Kontak"...',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 13, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    }
+
     return LayoutBuilder(
       builder: (context, constraints) {
         return SingleChildScrollView(
@@ -929,13 +1091,13 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(
-                      Icons.playlist_add_check,
+                      Icons.table_chart_outlined,
                       size: 56,
                       color: Colors.grey.shade400,
                     ),
                     const SizedBox(height: 10),
                     const Text(
-                      'Antrean Panggilan Kosong',
+                      'Belum Ada Kontak di Spreadsheet',
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
@@ -943,7 +1105,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Tambahkan nomor telepon untuk memulai autocall sekuensial.',
+                      'Data kontak akan muncul otomatis di sini begitu Anda mengisi sheet "Kontak" pada Google Spreadsheet.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.grey.shade600,
@@ -957,20 +1119,15 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                       alignment: WrapAlignment.center,
                       children: [
                         ElevatedButton.icon(
+                          onPressed: () => provider.syncContactsSilently(),
+                          icon: const Icon(Icons.sync),
+                          label: const Text('Cek Ulang Spreadsheet'),
+                        ),
+                        OutlinedButton.icon(
                           onPressed: () =>
                               _showAddNumberDialog(context, provider),
                           icon: const Icon(Icons.add),
-                          label: const Text('Tambah Nomor'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: provider.isLoadingContactsFromApi
-                              ? null
-                              : () => _fetchContactsFromApiDirect(
-                                  context,
-                                  provider,
-                                ),
-                          icon: const Icon(Icons.cloud_download),
-                          label: const Text('Tarik dari API'),
+                          label: const Text('Input Manual'),
                         ),
                       ],
                     ),

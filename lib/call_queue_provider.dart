@@ -24,9 +24,15 @@ class CallQueueProvider with ChangeNotifier {
   StreamSubscription<Map<String, dynamic>>? _telephonySubscription;
   Map<String, dynamic> _permissionsStatus = {};
   // Backend Upload API & Contacts Fetch API
+  static const String defaultGoogleAppsScriptUrl =
+      'https://script.google.com/macros/s/AKfycbw-3o-BK7ANO-lm1Ri39MNqmJHP6wt783U-swYptte_lkqIzNTR789YTfwLqpakjjZc/exec';
+
   String _backendUrl = 'https://your-api-domain.com/api/v1/recordings/upload';
-  String _contactsApiUrl = '';
+  String _contactsApiUrl = defaultGoogleAppsScriptUrl;
   bool _isLoadingContactsFromApi = false;
+  Timer? _autoSyncTimer;
+  bool _isAutoSyncEnabled = true;
+  DateTime? _lastSyncTime;
 
   // Call Timeout Configuration (Auto-hangup jika tidak diangkat, sibuk, atau tidak aktif)
   int _callTimeoutSeconds = 25; // Default 25 detik
@@ -66,6 +72,8 @@ class CallQueueProvider with ChangeNotifier {
   String get backendUrl => _backendUrl;
   String get contactsApiUrl => _contactsApiUrl;
   bool get isLoadingContactsFromApi => _isLoadingContactsFromApi;
+  bool get isAutoSyncEnabled => _isAutoSyncEnabled;
+  DateTime? get lastSyncTime => _lastSyncTime;
 
   int get callTimeoutSeconds => _callTimeoutSeconds;
   int get callSecondsElapsed => _callSecondsElapsed;
@@ -73,6 +81,48 @@ class CallQueueProvider with ChangeNotifier {
       (_callTimeoutSeconds - _callSecondsElapsed).clamp(0, _callTimeoutSeconds);
   bool get isCallTimerRunning => _isCallTimerRunning;
   List<Map<String, dynamic>> get deviceRecordings => _deviceRecordings;
+
+  void setAutoSyncEnabled(bool enabled) {
+    _isAutoSyncEnabled = enabled;
+    if (enabled) {
+      startAutoSync();
+    } else {
+      stopAutoSync();
+    }
+    notifyListeners();
+  }
+
+  void startAutoSync({int intervalSeconds = 15}) {
+    _autoSyncTimer?.cancel();
+    if (!_isAutoSyncEnabled) return;
+    _autoSyncTimer = Timer.periodic(Duration(seconds: intervalSeconds), (_) {
+      if (!_isQueueRunning &&
+          !_isLoadingContactsFromApi &&
+          _contactsApiUrl.isNotEmpty) {
+        syncContactsSilently();
+      }
+    });
+  }
+
+  void stopAutoSync() {
+    _autoSyncTimer?.cancel();
+  }
+
+  Future<int> syncContactsSilently() async {
+    if (_isLoadingContactsFromApi) return 0;
+    try {
+      final count = await fetchContactsFromApi(
+        clearExisting: false,
+        isSilent: true,
+      );
+      _lastSyncTime = DateTime.now();
+      notifyListeners();
+      return count;
+    } catch (e) {
+      debugPrint('[CallQueueProvider] Silent sync error: $e');
+      return 0;
+    }
+  }
 
   void setCallTimeoutSeconds(int seconds) {
     if (seconds >= 10 && seconds <= 90) {
@@ -148,6 +198,16 @@ class CallQueueProvider with ChangeNotifier {
         }
       }
 
+      // Fallback: jika belum ada URL kontak tersimpan, ambil dari login atau URL bawaan
+      if (_contactsApiUrl.isEmpty) {
+        final savedLoginUrl = prefs.getString('autocall_login_api_url');
+        if (savedLoginUrl != null && savedLoginUrl.isNotEmpty) {
+          _contactsApiUrl = savedLoginUrl;
+        } else {
+          _contactsApiUrl = defaultGoogleAppsScriptUrl;
+        }
+      }
+
       // If backend upload URL is still placeholder, auto-link to contacts API URL
       if ((_backendUrl.contains('your-api-domain.com') || _backendUrl.isEmpty) &&
           _contactsApiUrl.isNotEmpty) {
@@ -172,6 +232,12 @@ class CallQueueProvider with ChangeNotifier {
         }
       } else {
         _queue = [];
+      }
+
+      // Sinkronisasi kontak otomatis secara realtime saat aplikasi pertama kali siap
+      if (_contactsApiUrl.isNotEmpty) {
+        syncContactsSilently();
+        startAutoSync(intervalSeconds: 15);
       }
       notifyListeners();
     } catch (e) {
@@ -313,15 +379,15 @@ class CallQueueProvider with ChangeNotifier {
         );
       });
 
-      // If call was unanswered, busy, or failed, sync status directly to Spreadsheet
-      if (!isCallSuccess) {
-        final phone = _queue.firstWhere((e) => e.id == targetId).phoneNumber;
-        _syncCallStatusToSpreadsheet(
-          phoneNumber: phone,
-          statusText: duration > 0 ? 'GAGAL (${duration}s)' : 'TIDAK DIANGKAT / SIBUK',
-          duration: duration,
-        );
-      }
+      // Sinkronkan hasil panggilan secara realtime ke Google Spreadsheet (baik Terhubung maupun Gagal/Sibuk)
+      final phone = _queue.firstWhere((e) => e.id == targetId).phoneNumber;
+      _syncCallStatusToSpreadsheet(
+        phoneNumber: phone,
+        statusText: isCallSuccess
+            ? 'TERHUBUNG (${duration}s)'
+            : (duration > 0 ? 'GAGAL (${duration}s)' : 'TIDAK DIANGKAT / SIBUK'),
+        duration: duration,
+      );
 
       // Also refresh the device recordings library
       fetchDeviceRecordings();
@@ -740,6 +806,8 @@ class CallQueueProvider with ChangeNotifier {
     try {
       final payload = jsonEncode({
         'action': 'update_status',
+        'phone': phoneNumber,
+        'phoneNumber': phoneNumber,
         'phone_number': phoneNumber,
         'status': statusText,
         'call_duration': duration,
@@ -755,7 +823,20 @@ class CallQueueProvider with ChangeNotifier {
         body: payload,
       ).timeout(const Duration(seconds: 10));
     } catch (e) {
-      debugPrint('Failed to sync status to spreadsheet: $e');
+      debugPrint('[CallQueueProvider] POST update status failed, trying GET fallback: $e');
+      try {
+        final getUri = Uri.parse(targetUrl).replace(
+          queryParameters: {
+            'action': 'update_status',
+            'phone': phoneNumber,
+            'status': statusText,
+            'duration': duration.toString(),
+          },
+        );
+        await http.get(getUri).timeout(const Duration(seconds: 10));
+      } catch (err) {
+        debugPrint('[CallQueueProvider] Failed to sync status via GET fallback: $err');
+      }
     }
   }
 
@@ -763,7 +844,11 @@ class CallQueueProvider with ChangeNotifier {
   /// Supports common JSON schemas:
   /// - Array of objects: [ {"phoneNumber": "...", "name": "..."}, ... ]
   /// - Nested in data/contacts/leads/results: { "data": [ ... ] }
-  Future<int> fetchContactsFromApi({String? overrideUrl, bool clearExisting = false}) async {
+  Future<int> fetchContactsFromApi({
+    String? overrideUrl,
+    bool clearExisting = false,
+    bool isSilent = false,
+  }) async {
     final rawUrl = overrideUrl?.trim().isNotEmpty == true
         ? overrideUrl!.trim()
         : _contactsApiUrl.trim();
@@ -781,8 +866,10 @@ class CallQueueProvider with ChangeNotifier {
       _saveSettingsToStorage();
     }
 
-    _isLoadingContactsFromApi = true;
-    notifyListeners();
+    if (!isSilent || _queue.isEmpty) {
+      _isLoadingContactsFromApi = true;
+      notifyListeners();
+    }
 
     try {
       final response = await http.get(
@@ -794,7 +881,9 @@ class CallQueueProvider with ChangeNotifier {
       ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode != 200) {
-        throw Exception('Server merespon dengan status HTTP ${response.statusCode}');
+        throw Exception(
+          'Server merespon dengan status HTTP ${response.statusCode}',
+        );
       }
 
       final dynamic decoded = jsonDecode(response.body);
@@ -826,13 +915,12 @@ class CallQueueProvider with ChangeNotifier {
         _queue.clear();
       }
 
-      int addedCount = 0;
+      int syncedCount = 0;
       for (final raw in itemsList) {
         if (raw is! Map) continue;
         final map = Map<String, dynamic>.from(raw);
 
         // Normalize all keys to lowercase alphanumeric for robust case-insensitive extraction
-        // Handles: "No_Tlp" -> "notlp", "phoneNumber" -> "phonenumber", "Name" -> "name"
         final normalized = <String, dynamic>{};
         for (final entry in map.entries) {
           final cleanKey = entry.key
@@ -876,26 +964,106 @@ class CallQueueProvider with ChangeNotifier {
             ?.toString() ??
             DateTime.now().microsecondsSinceEpoch.toString();
 
-        _queue.add(
-          CallItem(
-            id: id,
-            phoneNumber: phone,
-            name: name.isNotEmpty ? name : 'Kontak ${_queue.length + 1}',
-            status: CallStatus.pending,
-          ),
-        );
-        addedCount++;
+        // Deteksi status panggilan dari spreadsheet
+        final rawStatus =
+            (normalized['status'] ?? '').toString().toUpperCase();
+        CallStatus parsedStatus = CallStatus.pending;
+        if (rawStatus.contains('TERHUBUNG')) {
+          parsedStatus = CallStatus.completed;
+        } else if (rawStatus.contains('TIDAK DIANGKAT') ||
+            rawStatus.contains('SIBUK') ||
+            rawStatus.contains('GAGAL') ||
+            rawStatus.contains('REJECT')) {
+          parsedStatus = CallStatus.failedOrBusy;
+        }
+
+        if (clearExisting) {
+          _queue.add(
+            CallItem(
+              id: id,
+              phoneNumber: phone,
+              name: name.isNotEmpty ? name : 'Kontak ${_queue.length + 1}',
+              status: parsedStatus,
+            ),
+          );
+          syncedCount++;
+        } else {
+          // Smart sync: cek apakah nomor sudah ada di queue
+          final cleanPhone = phone.replaceAll(RegExp(r'[^0-9]'), '');
+          final existingIdx = _queue.indexWhere((item) {
+            final qPhone = item.phoneNumber.replaceAll(RegExp(r'[^0-9]'), '');
+            return qPhone == cleanPhone ||
+                (qPhone.isNotEmpty &&
+                    cleanPhone.isNotEmpty &&
+                    (qPhone.endsWith(cleanPhone) || cleanPhone.endsWith(qPhone)));
+          });
+
+          if (existingIdx != -1) {
+            final existing = _queue[existingIdx];
+            // Update nama dan status jika belum aktif dipanggil
+            if (existing.status != CallStatus.dialing &&
+                existing.status != CallStatus.inCall) {
+              _queue[existingIdx] = existing.copyWith(
+                name: name.isNotEmpty ? name : existing.name,
+                status: (existing.status == CallStatus.pending &&
+                        parsedStatus != CallStatus.pending)
+                    ? parsedStatus
+                    : (rawStatus.isEmpty &&
+                            existing.status != CallStatus.pending)
+                        ? CallStatus.pending
+                        : existing.status,
+              );
+            }
+            syncedCount++;
+          } else {
+            // Nomor baru dari spreadsheet: tambahkan ke antrean
+            _queue.add(
+              CallItem(
+                id: id,
+                phoneNumber: phone,
+                name: name.isNotEmpty ? name : 'Kontak ${_queue.length + 1}',
+                status: parsedStatus,
+              ),
+            );
+            syncedCount++;
+          }
+        }
       }
 
+      // Sinkronkan penghapusan: jika queue sedang diam (idle), bersihkan kontak pending yang sudah dihapus dari sheet
+      if (!_isQueueRunning && !clearExisting && _queue.isNotEmpty) {
+        final incomingPhones = itemsList.map((raw) {
+          if (raw is! Map) return '';
+          final map = Map<String, dynamic>.from(raw);
+          final norm = <String, dynamic>{};
+          for (final entry in map.entries) {
+            norm[entry.key.toString().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '')] = entry.value;
+          }
+          final p = (norm['notlp'] ?? norm['notelp'] ?? norm['nohp'] ?? norm['phone'] ?? norm['nomor'] ?? '').toString();
+          return p.replaceAll(RegExp(r'[^0-9]'), '');
+        }).where((p) => p.isNotEmpty).toSet();
+
+        _queue.removeWhere((item) {
+          if (item.status != CallStatus.pending) return false;
+          final clean = item.phoneNumber.replaceAll(RegExp(r'[^0-9]'), '');
+          return !incomingPhones.any((p) => p == clean || p.endsWith(clean) || clean.endsWith(p));
+        });
+      }
+
+      _lastSyncTime = DateTime.now();
       _saveQueueToStorage();
       _isLoadingContactsFromApi = false;
       notifyListeners();
 
-      return addedCount;
+      return syncedCount;
     } catch (e) {
       _isLoadingContactsFromApi = false;
       notifyListeners();
-      rethrow;
+      if (!isSilent) {
+        rethrow;
+      }
+      debugPrint('[CallQueueProvider] Silent fetch error: $e');
+      return 0;
     }
   }
 
@@ -943,6 +1111,7 @@ class CallQueueProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    _autoSyncTimer?.cancel();
     _cancelCooldownTimer();
     _cancelCallTimeoutTimer();
     _telephonySubscription?.cancel();
