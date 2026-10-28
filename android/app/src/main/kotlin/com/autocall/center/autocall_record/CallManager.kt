@@ -88,7 +88,7 @@ class CallManager(
     private var activeTargetName: String? = null
     private var lastRecordedState: Int = TelephonyManager.CALL_STATE_IDLE
     private var wasOffhook: Boolean = false
-    private var callInitiatedTimestamp: Long = 0L
+    var callInitiatedTimestamp: Long = 0L
     private var lastEndCallTimestamp: Long = 0L
 
     var backendUploadUrl: String = UploadRecordingWorker.DEFAULT_API_URL

@@ -6,8 +6,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -28,6 +30,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
+import java.io.File
 
 /**
  * AutoCallForegroundService
@@ -65,6 +68,9 @@ class AutoCallForegroundService : Service() {
         var isTimeoutPaused: Boolean = false
             private set
 
+        var instance: AutoCallForegroundService? = null
+            private set
+
         fun start(context: Context, phoneNumber: String, name: String, timeoutSeconds: Int) {
             val intent = Intent(context, AutoCallForegroundService::class.java).apply {
                 action = ACTION_START
@@ -91,10 +97,22 @@ class AutoCallForegroundService : Service() {
         }
 
         fun pauseTimeout(context: Context) {
+            // Instantly pause timer in-memory so background thread cannot tick even 1 more second
+            isTimeoutPaused = true
+            instance?.stopCountdown()
+            instance?.mainHandler?.post {
+                instance?.updateNotification("Panggilan Aktif (Terhubung)")
+                instance?.updateOverlayText()
+            }
+
             val intent = Intent(context, AutoCallForegroundService::class.java).apply {
                 action = ACTION_PAUSE_TIMEOUT
             }
-            context.startService(intent)
+            try {
+                context.startService(intent)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed startService for pauseTimeout: ${e.localizedMessage}")
+            }
         }
     }
 
@@ -109,15 +127,44 @@ class AutoCallForegroundService : Service() {
     private var currentCountdown: Int = 25
 
     private var countdownRunnable: Runnable? = null
+    private var isScreenReceiverRegistered = false
+
+    // Detect when screen turns back ON (e.g. user moves phone from ear)
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_ON || intent?.action == Intent.ACTION_USER_PRESENT) {
+                if (isRunning && !isTimeoutPaused) {
+                    mainHandler.postDelayed({
+                        if (AutoCallAccessibilityService.checkIsCallConnected()) {
+                            Log.i(TAG, "Call answered detected upon SCREEN_ON! Halting auto-hangup timer.")
+                            CallManager.instance?.notifyCallAnswered()
+                        }
+                    }, 350L)
+                }
+            }
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         createNotificationChannel()
         acquireWakeLock()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
         isRunning = true
+
+        try {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_USER_PRESENT)
+            }
+            registerReceiver(screenStateReceiver, filter)
+            isScreenReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register screenStateReceiver: ${e.localizedMessage}")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -203,13 +250,22 @@ class AutoCallForegroundService : Service() {
 
     private fun startCountdown() {
         stopCountdown()
+        var checkTickCount = 0
         countdownRunnable = object : Runnable {
             override fun run() {
                 if (isTimeoutPaused) return
 
-                // Check if call has been answered by remote party
+                // 1. Accessibility inspection on active dialer window
                 if (AutoCallAccessibilityService.checkIsCallConnected()) {
                     Log.i(TAG, "Call answered detected during native countdown tick! Halting auto-hangup timer.")
+                    CallManager.instance?.notifyCallAnswered()
+                    return
+                }
+
+                // 2. Fallback: Check if OEM Call Recording has started (only created on answered calls)
+                checkTickCount++
+                if (checkTickCount % 2 == 0 && checkIfNewRecordingStarted()) {
+                    Log.i(TAG, "Active call recording file detected! Call is answered! Halting auto-hangup timer.")
                     CallManager.instance?.notifyCallAnswered()
                     return
                 }
@@ -230,6 +286,35 @@ class AutoCallForegroundService : Service() {
             }
         }
         mainHandler.postDelayed(countdownRunnable!!, 1000L)
+    }
+
+    /**
+     * Checks if a new audio recording file has been generated by the OEM dialer
+     * since the call was initiated. Built-in dialers only record answered calls.
+     */
+    private fun checkIfNewRecordingStarted(): Boolean {
+        return try {
+            val callStart = CallManager.instance?.callInitiatedTimestamp ?: 0L
+            if (callStart <= 0L) return false
+            val candidateDirs = RecordingSearchHelper.getCandidateRecordingDirectories()
+            for (dir in candidateDirs) {
+                if (!dir.exists() || !dir.isDirectory) continue
+                val files = dir.listFiles() ?: continue
+                for (file in files) {
+                    if (file.isFile && file.lastModified() >= (callStart - 2000L)) {
+                        val name = file.name.lowercase()
+                        if (name.endsWith(".m4a") || name.endsWith(".mp3") || name.endsWith(".amr") ||
+                            name.endsWith(".wav") || name.endsWith(".aac") || name.endsWith(".3gp") ||
+                            name.endsWith(".ogg") || name.endsWith(".opus")) {
+                            return true
+                        }
+                    }
+                }
+            }
+            false
+        } catch (e: Throwable) {
+            false
+        }
     }
 
     private fun stopCountdown() {
@@ -354,12 +439,20 @@ class AutoCallForegroundService : Service() {
             }
             val subView = TextView(this@AutoCallForegroundService).apply {
                 tag = "OVERLAY_SUB"
-                text = "Auto-close dalam ${currentCountdown}s"
+                text = "Auto-close dalam ${currentCountdown}s (Tap jika terhubung)"
                 setTextColor(Color.parseColor("#F87171")) // Red-400
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             }
             addView(titleView)
             addView(subView)
+
+            // Let user tap info area to immediately mark call as answered
+            setOnClickListener {
+                if (!isTimeoutPaused) {
+                    Log.i(TAG, "User tapped floating overlay info area. Halting auto-hangup timer.")
+                    CallManager.instance?.notifyCallAnswered()
+                }
+            }
         }
         root.addView(infoCol)
 
@@ -400,10 +493,10 @@ class AutoCallForegroundService : Service() {
         try {
             val subView = overlay.findViewWithTag<TextView>("OVERLAY_SUB")
             if (isTimeoutPaused) {
-                subView?.text = "Terhubung (Sedang Bicara)"
+                subView?.text = "Terhubung (Sedang Bicara) ✓"
                 subView?.setTextColor(Color.parseColor("#4ADE80")) // Green-400
             } else {
-                subView?.text = "Auto-close dalam ${currentCountdown}s"
+                subView?.text = "Auto-close dalam ${currentCountdown}s (Tap jika terhubung)"
                 subView?.setTextColor(Color.parseColor("#F87171")) // Red-400
             }
         } catch (e: Exception) {
@@ -484,10 +577,19 @@ class AutoCallForegroundService : Service() {
     }
 
     private fun cleanUpAndStop() {
+        if (isScreenReceiverRegistered) {
+            try {
+                unregisterReceiver(screenStateReceiver)
+            } catch (_: Exception) {}
+            isScreenReceiverRegistered = false
+        }
         stopCountdown()
         removeFloatingOverlay()
         releaseWakeLock()
         isRunning = false
+        if (instance == this) {
+            instance = null
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

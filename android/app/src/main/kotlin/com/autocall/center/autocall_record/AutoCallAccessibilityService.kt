@@ -117,13 +117,27 @@ class AutoCallAccessibilityService : AccessibilityService() {
         Log.i(TAG, "AutoCallAccessibilityService destroyed.")
     }
 
-    private val timerRegex = Regex("""\b\d{1,2}:\d{2}\b""")
+    // Match timer formats like 00:01, 0:01, 01:23, 00:00:05, 0.05, and Unicode/bracketed variations
+    private val timerRegex = Regex("""(?:\b|\D|^)\d{1,2}[:.]\d{2}(?:[:.]\d{2})?(?:\b|\D|$)""")
+    // Match spoken duration like "5 detik", "0 menit 5 detik", "5 seconds" (used in Google Phone contentDescription)
+    private val spokenTimerRegex = Regex("""\d+\s*(?:detik|dtk|menit|mnt|sec|min)""", RegexOption.IGNORE_CASE)
+
+    private val connectedKeywords = listOf(
+        "terhubung", "tersambung", "berlangsung", "bicara", "sedang bicara",
+        "panggilan aktif", "connected", "in call", "incall", "ongoing",
+        "active call", "call in progress"
+    )
+
+    private val connectedViewIdKeywords = listOf(
+        "chronometer", "call_time", "floating_incall_time", "call_duration",
+        "elapsed", "incall_timer", "call_state", "call_status"
+    )
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         try {
             val pkg = event.packageName?.toString() ?: ""
-            if (!isDialerPackage(pkg)) return
+            if (isExcludedPackage(pkg)) return
 
             // If foreground service is running and countdown is not yet paused,
             // monitor if the remote party answered and call timer started ticking!
@@ -150,7 +164,7 @@ class AutoCallAccessibilityService : AccessibilityService() {
                 for (window in winList) {
                     val root = window.root ?: continue
                     val pkg = root.packageName?.toString() ?: ""
-                    if (!isDialerPackage(pkg)) continue
+                    if (isExcludedPackage(pkg)) continue
                     if (hasConnectedCallIndicator(root)) {
                         return true
                     }
@@ -159,7 +173,7 @@ class AutoCallAccessibilityService : AccessibilityService() {
             val activeRoot = rootInActiveWindow
             if (activeRoot != null) {
                 val pkg = activeRoot.packageName?.toString() ?: ""
-                if (isDialerPackage(pkg) && hasConnectedCallIndicator(activeRoot)) {
+                if (!isExcludedPackage(pkg) && hasConnectedCallIndicator(activeRoot)) {
                     return true
                 }
             }
@@ -172,33 +186,50 @@ class AutoCallAccessibilityService : AccessibilityService() {
     private fun hasConnectedCallIndicator(node: AccessibilityNodeInfo?): Boolean {
         if (node == null) return false
 
-        // Check Chronometer widget class
-        val className = node.className?.toString() ?: ""
-        if (className.contains("Chronometer", ignoreCase = true)) {
-            val txt = node.text?.toString() ?: ""
-            if (txt.isNotEmpty() && timerRegex.containsMatchIn(txt)) {
-                return true
-            }
-        }
-
-        // Check View Resource IDs
-        val viewId = node.viewIdResourceName?.lowercase() ?: ""
-        if (viewId.contains("chronometer") || viewId.contains("floating_incall_time") || viewId.contains("call_time")) {
-            val txt = node.text?.toString() ?: ""
-            if (txt.isNotEmpty() && timerRegex.containsMatchIn(txt)) {
-                return true
-            }
-        }
-
-        // Check text (timer format 00:01 or status "Terhubung" / "Connected")
         val text = node.text?.toString()?.trim() ?: ""
-        if (text.isNotEmpty()) {
-            if (timerRegex.matches(text) || timerRegex.containsMatchIn(text)) {
-                return true
+        val desc = node.contentDescription?.toString()?.trim() ?: ""
+        val combined = "$text $desc".trim()
+
+        // If the node specifically indicates still dialing / ringing, it's not connected yet
+        val lowerCombined = combined.lowercase()
+        val isDialing = lowerCombined.contains("memanggil") ||
+                lowerCombined.contains("dialing") ||
+                lowerCombined.contains("calling") ||
+                lowerCombined.contains("menghubungi")
+
+        if (!isDialing) {
+            // 1. Check Chronometer widget class (direct indicator in Android)
+            val className = node.className?.toString() ?: ""
+            if (className.contains("Chronometer", ignoreCase = true)) {
+                // Any active visible chronometer or one with digits
+                if (combined.isNotEmpty() && (timerRegex.containsMatchIn(combined) || spokenTimerRegex.containsMatchIn(combined))) {
+                    return true
+                }
+                // If it's a visible chronometer without text yet, it's still connected!
+                if (node.isVisibleToUser) {
+                    return true
+                }
             }
-            val lower = text.lowercase()
-            if (lower == "terhubung" || lower == "connected" || lower == "tersambung" || lower.contains("bicara")) {
-                return true
+
+            // 2. Check View Resource IDs
+            val viewId = node.viewIdResourceName?.lowercase() ?: ""
+            if (connectedViewIdKeywords.any { viewId.contains(it) }) {
+                if (combined.isNotEmpty() && (timerRegex.containsMatchIn(combined) || spokenTimerRegex.containsMatchIn(combined))) {
+                    return true
+                }
+                if (connectedKeywords.any { lowerCombined.contains(it) }) {
+                    return true
+                }
+            }
+
+            // 3. Check combined text & contentDescription for timer or keywords
+            if (combined.isNotEmpty()) {
+                if (timerRegex.containsMatchIn(combined) || spokenTimerRegex.containsMatchIn(combined)) {
+                    return true
+                }
+                if (connectedKeywords.any { lowerCombined.contains(it) }) {
+                    return true
+                }
             }
         }
 
@@ -317,6 +348,9 @@ class AutoCallAccessibilityService : AccessibilityService() {
                 p.contains("dialer") ||
                 p.contains("phone") ||
                 p.contains("telecom") ||
+                p.contains("telephon") ||
+                p.contains("contact") ||
+                p.contains("caller") ||
                 (p.contains("call") && !p.contains("autocall"))
     }
 

@@ -2174,23 +2174,48 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                   style: TextStyle(fontSize: 11, color: Colors.black54),
                 ),
               ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  foregroundColor: Colors.red.shade700,
-                  side: BorderSide(color: Colors.red.shade400),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: Colors.teal.shade700,
+                      side: BorderSide(color: Colors.teal.shade400),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                    ),
+                    icon: const Icon(Icons.phone_in_talk, size: 14),
+                    label: const Text(
+                      'Sedang Bicara',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    onPressed: () => provider.disableTimeoutForCurrentCall(),
                   ),
-                ),
-                icon: const Icon(Icons.call_end, size: 14),
-                label: const Text(
-                  'Tutup Sekarang',
-                  style: TextStyle(fontSize: 11),
-                ),
-                onPressed: () => provider.hangupCurrentCall(),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: Colors.red.shade700,
+                      side: BorderSide(color: Colors.red.shade400),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                    ),
+                    icon: const Icon(Icons.call_end, size: 14),
+                    label: const Text(
+                      'Tutup Sekarang',
+                      style: TextStyle(fontSize: 11),
+                    ),
+                    onPressed: () => provider.hangupCurrentCall(),
+                  ),
+                ],
               ),
             ],
           ),
