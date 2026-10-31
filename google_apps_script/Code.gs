@@ -181,6 +181,7 @@ function handleLogin(username, password) {
     var rowUser = String(row[userCol] || '').trim().toLowerCase();
     var rowPass = String(row[passCol] || '').trim();
     var rowName = String(row[nameCol] || row[userCol] || '').trim();
+    var rowRole = String(row[roleCol] || 'User').trim();
     var rawStatus = row[statusCol];
     var rowStatus = (rawStatus !== undefined && rawStatus !== null && String(rawStatus).trim() !== '')
         ? String(rawStatus).trim()
@@ -267,6 +268,24 @@ function handleGetLeads() {
 }
 
 /**
+ * Normalisasi nomor telepon Indonesia untuk pencocokan yang akurat:
+ * - Menghapus semua karakter non-angka
+ * - Menghapus prefix negara '62' atau '0' di depan
+ * Contoh: '085157997349', '6285157997349', '+62 851-5799-7349'
+ * Semuanya menjadi: '85157997349'
+ */
+function normalizePhone(p) {
+  if (!p) return "";
+  var digits = String(p).replace(/[^0-9]/g, '');
+  if (digits.indexOf("62") === 0) {
+    digits = digits.substring(2);
+  } else if (digits.indexOf("0") === 0) {
+    digits = digits.substring(1);
+  }
+  return digits;
+}
+
+/**
  * Update status panggilan jika dikirim balik dari aplikasi
  */
 function handleUpdateCallStatus(payload) {
@@ -277,35 +296,48 @@ function handleUpdateCallStatus(payload) {
   var phone = String(payload.phone || payload.phoneNumber || payload.phone_number || '').trim();
   var status = String(payload.status || '').trim();
   var record = String(payload.recordUrl || payload.record || '').trim();
+  var name = String(payload.name || '').trim().toLowerCase();
 
   if (!phone) {
     return createJsonResponse({ status: 'error', message: 'Nomor telepon kosong' });
   }
 
-  // Cari kolom No_Tlp dan Status
+  // Cari kolom No_Tlp, Status, Record, dan Name
   var headers = data[0];
   var phoneCol = -1;
   var statusCol = -1;
   var recordCol = -1;
+  var nameCol = -1;
 
   for (var j = 0; j < headers.length; j++) {
     var h = String(headers[j]).toLowerCase();
     if (h.includes('tlp') || h.includes('telp') || h.includes('phone') || h.includes('hp')) phoneCol = j + 1;
     if (h.includes('status')) statusCol = j + 1;
     if (h.includes('record')) recordCol = j + 1;
+    if (h.includes('name') || h.includes('nama')) nameCol = j + 1;
   }
 
   if (phoneCol > 0 && statusCol > 0) {
-    for (var i = 1; i < data.length; i++) {
-      var rowPhone = String(data[i][phoneCol - 1]).replace(/[^0-9]/g, '');
-      var cleanPhone = phone.replace(/[^0-9]/g, '');
+    var normInputPhone = normalizePhone(phone);
 
-      if (rowPhone && cleanPhone && (rowPhone === cleanPhone || rowPhone.endsWith(cleanPhone) || cleanPhone.endsWith(rowPhone))) {
+    for (var i = 1; i < data.length; i++) {
+      var rowPhone = String(data[i][phoneCol - 1]);
+      var normRowPhone = normalizePhone(rowPhone);
+      var rowName = (nameCol > 0) ? String(data[i][nameCol - 1]).trim().toLowerCase() : '';
+
+      var isPhoneMatch = (normRowPhone && normInputPhone && (
+        normRowPhone === normInputPhone ||
+        normRowPhone.endsWith(normInputPhone) ||
+        normInputPhone.endsWith(normRowPhone)
+      ));
+      var isNameMatch = (name && rowName && name === rowName);
+
+      if (isPhoneMatch || isNameMatch) {
         sheet.getRange(i + 1, statusCol).setValue(status);
         if (recordCol > 0 && record) {
           sheet.getRange(i + 1, recordCol).setValue(record);
         }
-        return createJsonResponse({ status: 'success', message: 'Status berhasil diperbarui' });
+        return createJsonResponse({ status: 'success', message: 'Status berhasil diperbarui pada baris ' + (i + 1) });
       }
     }
   }
@@ -368,12 +400,14 @@ function handleUploadRecording(payload) {
     var phoneCol = -1;
     var statusCol = -1;
     var recordCol = -1;
+    var nameCol = -1;
 
     for (var j = 0; j < headers.length; j++) {
       var h = String(headers[j]).toLowerCase();
       if (h.includes('tlp') || h.includes('telp') || h.includes('phone') || h.includes('hp')) phoneCol = j + 1;
       if (h.includes('status')) statusCol = j + 1;
       if (h.includes('record')) recordCol = j + 1;
+      if (h.includes('name') || h.includes('nama')) nameCol = j + 1;
     }
 
     // Jika kolom Record belum ada di header, tambahkan otomatis
@@ -390,11 +424,23 @@ function handleUploadRecording(payload) {
     var recordFormula = '=HYPERLINK("' + fileUrl + '", "▶ Putar Rekaman")';
 
     var rowMatched = false;
-    if (phoneCol > 0 && phoneNumber) {
-      var cleanInputPhone = phoneNumber.replace(/[^0-9]/g, '');
+    var normInputPhone = normalizePhone(phoneNumber);
+    var cleanInputName = contactName.trim().toLowerCase();
+
+    if (phoneCol > 0 && normInputPhone) {
       for (var i = 1; i < data.length; i++) {
-        var rowPhone = String(data[i][phoneCol - 1]).replace(/[^0-9]/g, '');
-        if (rowPhone && cleanInputPhone && (rowPhone === cleanInputPhone || rowPhone.endsWith(cleanInputPhone) || cleanInputPhone.endsWith(rowPhone))) {
+        var rowPhone = String(data[i][phoneCol - 1]);
+        var normRowPhone = normalizePhone(rowPhone);
+        var rowName = (nameCol > 0) ? String(data[i][nameCol - 1]).trim().toLowerCase() : '';
+
+        var isPhoneMatch = (normRowPhone && normInputPhone && (
+          normRowPhone === normInputPhone ||
+          normRowPhone.endsWith(normInputPhone) ||
+          normInputPhone.endsWith(normRowPhone)
+        ));
+        var isNameMatch = (cleanInputName && rowName && cleanInputName === rowName);
+
+        if (isPhoneMatch || isNameMatch) {
           if (statusCol > 0) {
             sheet.getRange(i + 1, statusCol).setValue(status);
           }
@@ -405,24 +451,44 @@ function handleUploadRecording(payload) {
       }
     }
 
-    // Jika nomor belum terdaftar di sheet, tambahkan baris baru
-    if (!rowMatched && phoneCol > 0 && phoneNumber) {
-      var newRow = [];
-      var maxCols = Math.max(headers.length, recordCol);
-      for (var col = 1; col <= maxCols; col++) {
-        if (col === 1 && String(headers[0]).toLowerCase() === 'no') {
-          newRow.push(data.length);
-        } else if (col === phoneCol) {
-          newRow.push(phoneNumber);
-        } else if (col === statusCol) {
-          newRow.push(status);
-        } else if (col === recordCol) {
-          newRow.push(recordFormula);
-        } else {
-          newRow.push(contactName);
+    // Jika nomor belum cocok persis dengan kolom No_Tlp:
+    // Cek apakah nama kontak cocok dengan baris yang sudah ada agar tidak membuat baris ganda
+    if (!rowMatched && phoneCol > 0) {
+      var nameMatchedRow = -1;
+      if (nameCol > 0 && cleanInputName) {
+        for (var k = 1; k < data.length; k++) {
+          var existingName = String(data[k][nameCol - 1]).trim().toLowerCase();
+          if (existingName && existingName === cleanInputName) {
+            nameMatchedRow = k + 1;
+            break;
+          }
         }
       }
-      sheet.appendRow(newRow);
+
+      if (nameMatchedRow > 0) {
+        if (statusCol > 0) sheet.getRange(nameMatchedRow, statusCol).setValue(status);
+        sheet.getRange(nameMatchedRow, recordCol).setValue(recordFormula);
+      } else {
+        // Hanya tambahkan baris baru jika kontak benar-benar baru di luar daftar sheet
+        var newRow = [];
+        var maxCols = Math.max(headers.length, recordCol);
+        for (var col = 1; col <= maxCols; col++) {
+          if (col === 1 && String(headers[0]).toLowerCase() === 'no') {
+            newRow.push(data.length);
+          } else if (col === phoneCol) {
+            newRow.push(phoneNumber);
+          } else if (col === statusCol) {
+            newRow.push(status);
+          } else if (col === recordCol) {
+            newRow.push(recordFormula);
+          } else if (col === nameCol) {
+            newRow.push(contactName);
+          } else {
+            newRow.push('');
+          }
+        }
+        sheet.appendRow(newRow);
+      }
     }
 
     return createJsonResponse({

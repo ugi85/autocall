@@ -459,6 +459,10 @@ class CallQueueProvider with ChangeNotifier {
   }
 
   void _handleCallAnswered(Map<String, dynamic> event) {
+    // Crucial: Call is answered by remote party!
+    // Cancel the dialing/ringing timeout timer immediately so active conversation is NEVER interrupted!
+    _cancelCallTimeoutTimer();
+
     if (_currentProcessingId != null) {
       _updateItem(_currentProcessingId!, (item) {
         return item.copyWith(

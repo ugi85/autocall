@@ -115,6 +115,7 @@ class AutoCallForegroundService : Service() {
             // User explicitly pauses timer
             isTimeoutPaused = true
             instance?.stopCountdown()
+            instance?.stopInCallMonitor()
             instance?.mainHandler?.post {
                 instance?.updateNotification("Panggilan Dijeda (Manual)")
                 instance?.updateOverlayText()
@@ -196,7 +197,8 @@ class AutoCallForegroundService : Service() {
                 Log.i(TAG, "Received ACTION_PAUSE_TIMEOUT. Pausing countdown timer.")
                 isTimeoutPaused = true
                 stopCountdown()
-                updateNotification("Panggilan Aktif (Terhubung)")
+                stopInCallMonitor()
+                updateNotification("Panggilan Dijeda (Manual)")
                 updateOverlayText()
                 return START_STICKY
             }
@@ -294,8 +296,70 @@ class AutoCallForegroundService : Service() {
 
     fun onCallAnsweredDetected() {
         mainHandler.post {
-            updateNotification("Terhubung (Auto-close ${currentCountdown}s)")
-            updateOverlayText()
+            stopCountdown()
+            startInCallMonitor()
+        }
+    }
+
+    private var inCallMonitorRunnable: Runnable? = null
+    private var voipInactiveConsecutiveTicks = 0
+
+    private fun startInCallMonitor() {
+        stopInCallMonitor()
+        voipInactiveConsecutiveTicks = 0
+        val answeredAt = CallManager.instance?.callAnsweredTimestamp ?: System.currentTimeMillis()
+
+        inCallMonitorRunnable = object : Runnable {
+            override fun run() {
+                if (!isRunning) return
+
+                val elapsedSec = ((System.currentTimeMillis() - answeredAt) / 1000).coerceAtLeast(0L)
+                val durationStr = String.format("%02d:%02d", elapsedSec / 60, elapsedSec % 60)
+
+                updateNotification("Terhubung ($durationStr)")
+                updateOverlayInCallState(durationStr)
+
+                // If in WhatsApp mode, actively monitor if VoIP call session has ended
+                if (callMode == CALL_MODE_WHATSAPP) {
+                    // Only evaluate after at least 2 seconds of conversation
+                    if (elapsedSec >= 2) {
+                        val isStillActive = AutoCallAccessibilityService.checkIsWhatsAppVoipActive()
+                        if (!isStillActive) {
+                            voipInactiveConsecutiveTicks++
+                            if (voipInactiveConsecutiveTicks >= 2) {
+                                Log.i(TAG, "WhatsApp VoIP session ended after $elapsedSec seconds (confirmed over 2 ticks)! Finishing call session.")
+                                stop(applicationContext)
+                                CallManager.instance?.bringAppToForeground()
+                                return
+                            }
+                        } else {
+                            voipInactiveConsecutiveTicks = 0
+                        }
+                    }
+                }
+
+                mainHandler.postDelayed(this, 1000L)
+            }
+        }
+        mainHandler.post(inCallMonitorRunnable!!)
+    }
+
+    private fun stopInCallMonitor() {
+        inCallMonitorRunnable?.let {
+            mainHandler.removeCallbacks(it)
+            inCallMonitorRunnable = null
+        }
+        voipInactiveConsecutiveTicks = 0
+    }
+
+    private fun updateOverlayInCallState(durationStr: String) {
+        val overlay = floatingOverlayView ?: return
+        try {
+            val subView = overlay.findViewWithTag<TextView>("OVERLAY_SUB")
+            subView?.text = "Terhubung ($durationStr) ✓"
+            subView?.setTextColor(Color.parseColor("#4ADE80")) // Green-400
+        } catch (e: Exception) {
+            Log.w(TAG, "Error updating overlay in-call state: ${e.localizedMessage}")
         }
     }
 
@@ -308,9 +372,10 @@ class AutoCallForegroundService : Service() {
 
                 // 1. Accessibility inspection on active dialer window
                 if (callMode == CALL_MODE_WHATSAPP) {
-                    if (CallManager.instance?.wasCallAnswered != true && AutoCallAccessibilityService.checkIsCallConnected()) {
-                        Log.i(TAG, "WhatsApp call answered detected during native countdown tick!")
+                    if (AutoCallAccessibilityService.checkIsCallConnected()) {
+                        Log.i(TAG, "WhatsApp call answered detected during native countdown tick! Halting auto-hangup timer.")
                         CallManager.instance?.notifyCallAnswered()
+                        return
                     }
                 } else {
                     if (AutoCallAccessibilityService.checkIsCallConnected()) {
@@ -567,7 +632,12 @@ class AutoCallForegroundService : Service() {
                 subView?.text = "Panggilan Dijeda (Manual) ✓"
                 subView?.setTextColor(Color.parseColor("#38BDF8")) // Sky blue
             } else if (isAnswered) {
-                subView?.text = "Terhubung (Auto-close ${currentCountdown}s) ✓"
+                val answeredAt = CallManager.instance?.callAnsweredTimestamp ?: 0L
+                val elapsedSec = if (answeredAt > 0L) {
+                    ((System.currentTimeMillis() - answeredAt) / 1000).coerceAtLeast(0L)
+                } else 0L
+                val durationStr = String.format("%02d:%02d", elapsedSec / 60, elapsedSec % 60)
+                subView?.text = "Terhubung ($durationStr) ✓"
                 subView?.setTextColor(Color.parseColor("#4ADE80")) // Green-400
             } else {
                 subView?.text = "Auto-close dalam ${currentCountdown}s"
@@ -652,6 +722,9 @@ class AutoCallForegroundService : Service() {
     }
 
     private fun cleanUpAndStop() {
+        stopCountdown()
+        stopInCallMonitor()
+        removeFloatingOverlay()
         if (callMode == CALL_MODE_WHATSAPP) {
             try {
                 val recordedPath = waAudioRecorder?.stopRecording() ?: ""

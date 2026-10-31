@@ -87,6 +87,7 @@ class CallManager(
 
     // Active call tracking
     private var activeTargetNumber: String? = null
+    private var activeTargetRawNumber: String? = null
     private var activeTargetName: String? = null
     private var lastRecordedState: Int = TelephonyManager.CALL_STATE_IDLE
     private var wasOffhook: Boolean = false
@@ -279,6 +280,7 @@ class CallManager(
 
         val cleanNumber = phoneNumber.trim()
         activeTargetNumber = cleanNumber
+        activeTargetRawNumber = cleanNumber
         activeTargetName = name.trim()
         callInitiatedTimestamp = System.currentTimeMillis()
         callAnsweredTimestamp = 0L
@@ -333,6 +335,7 @@ class CallManager(
         } catch (_: Exception) {}
 
         val cleanNumber = normalizeWhatsAppNumber(phoneNumber)
+        activeTargetRawNumber = phoneNumber.trim()
         activeTargetNumber = cleanNumber
         activeTargetName = name.trim()
         callInitiatedTimestamp = System.currentTimeMillis()
@@ -352,37 +355,51 @@ class CallManager(
                 callMode = AutoCallForegroundService.CALL_MODE_WHATSAPP
             )
 
-            // 2. Try direct WhatsApp VoIP Call if contact exists in phone contacts
-            val voipDataId = findWhatsAppVoipDataId(cleanNumber)
-            if (voipDataId != null) {
-                Log.i(TAG, "Initiating DIRECT WhatsApp VoIP call via ContactsContract Data ID: $voipDataId")
-                AutoCallAccessibilityService.isWhatsAppPendingCall = false
-                val dataUri = Uri.parse("content://com.android.contacts/data/$voipDataId")
-                val waCallIntent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(dataUri, "vnd.android.cursor.item/vnd.com.whatsapp.voip.call")
-                    `package` = "com.whatsapp"
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP
-                }
-                appContext.startActivity(waCallIntent)
-            } else {
-                // Fallback for unsaved contacts: Open chat and have Accessibility click voice call button
-                Log.i(TAG, "VoIP data ID not found. Opening WhatsApp chat with accessibility automation fallback.")
-                AutoCallAccessibilityService.isWhatsAppPendingCall = true
-                val waUri = Uri.parse("https://api.whatsapp.com/send?phone=$cleanNumber")
-                val waIntent = Intent(Intent.ACTION_VIEW, waUri).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    if (isPackageInstalled("com.whatsapp")) {
-                        `package` = "com.whatsapp"
-                    } else if (isPackageInstalled("com.whatsapp.w4b")) {
-                        `package` = "com.whatsapp.w4b"
-                    }
-                }
-                appContext.startActivity(waIntent)
+            // 2. Launch WhatsApp Chat interface for target contact
+            AutoCallAccessibilityService.isWhatsAppPendingCall = true
+            AutoCallAccessibilityService.startWhatsAppCallAutomation(cleanNumber)
+            val pkg = if (isPackageInstalled("com.whatsapp")) "com.whatsapp" else "com.whatsapp.w4b"
+
+            // Native WhatsApp deep-link scheme works universally on Android 10-14 without web redirects
+            val nativeWaUri = Uri.parse("whatsapp://send?phone=$cleanNumber")
+            val waIntent = Intent(Intent.ACTION_VIEW, nativeWaUri).apply {
+                setPackage(pkg)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
             }
+
+            var launched = launchActivitySafely(waIntent)
+            if (!launched) {
+                // Secondary fallback via https endpoint
+                val webWaUri = Uri.parse("https://api.whatsapp.com/send?phone=$cleanNumber")
+                val webIntent = Intent(Intent.ACTION_VIEW, webWaUri).apply {
+                    setPackage(pkg)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                }
+                launched = launchActivitySafely(webIntent)
+            }
+
+            // Fallback retry at 1200ms: Ensure WhatsApp interface is brought to the foreground on Vivo/OEM devices
+            mainHandler.postDelayed({
+                try {
+                    val a11y = AutoCallAccessibilityService.instance
+                    val root = a11y?.rootInActiveWindow
+                    val curPkg = root?.packageName?.toString() ?: ""
+                    if (!curPkg.contains("whatsapp") && AutoCallForegroundService.isRunning) {
+                        Log.i(TAG, "WhatsApp interface not detected in foreground after 1.2s. Retrying launch via AccessibilityService...")
+                        val retryIntent = Intent(Intent.ACTION_VIEW, Uri.parse("whatsapp://send?phone=$cleanNumber")).apply {
+                            setPackage(pkg)
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        }
+                        AutoCallAccessibilityService.bringAppToFront(retryIntent)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error in WhatsApp launch verification: ${e.localizedMessage}")
+                }
+            }, 1200L)
 
             emitEvent(
                 mapOf(
@@ -395,8 +412,48 @@ class CallManager(
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to launch WhatsApp call: ${e.localizedMessage}", e)
+            AutoCallAccessibilityService.stopWhatsAppCallAutomation()
             AutoCallAccessibilityService.isWhatsAppPendingCall = false
             AutoCallForegroundService.stop(appContext)
+            false
+        }
+    }
+
+    /**
+     * Safely launches activities, prioritizing foreground Activity context and AccessibilityService context
+     * to bypass aggressive OEM background activity launch restrictions (e.g. Vivo Funtouch OS).
+     */
+    private fun launchActivitySafely(intent: Intent): Boolean {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+
+        // 1. Try active Activity context if available (foreground app)
+        val act = activity
+        if (act != null && !act.isFinishing && !act.isDestroyed) {
+            try {
+                act.startActivity(intent)
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "launchActivitySafely via Activity failed: ${e.localizedMessage}")
+            }
+        }
+
+        // 2. Try AccessibilityService context (exempt from OEM background launch restrictions)
+        val a11y = AutoCallAccessibilityService.instance
+        if (a11y != null) {
+            try {
+                a11y.startActivity(intent)
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "launchActivitySafely via AccessibilityService failed: ${e.localizedMessage}")
+            }
+        }
+
+        // 3. Fallback to appContext
+        return try {
+            appContext.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "launchActivitySafely via appContext failed: ${e.localizedMessage}")
             false
         }
     }
@@ -473,6 +530,8 @@ class CallManager(
     }
 
     fun onWhatsAppCallFinished(recordingPath: String, wasAnswered: Boolean? = null) {
+        AutoCallAccessibilityService.stopWhatsAppCallAutomation()
+        val rawPhone = activeTargetRawNumber ?: activeTargetNumber ?: ""
         val phone = activeTargetNumber ?: ""
         val name = activeTargetName ?: ""
         val start = callInitiatedTimestamp
@@ -493,6 +552,7 @@ class CallManager(
         }
 
         activeTargetNumber = null
+        activeTargetRawNumber = null
         activeTargetName = null
         callInitiatedTimestamp = 0L
         callAnsweredTimestamp = 0L
@@ -500,12 +560,12 @@ class CallManager(
 
         val isSuccess = isActuallyAnswered && duration > 0
 
-        Log.i(TAG, "WhatsApp call finished. Phone: $phone, wasAnswered: $isActuallyAnswered, Duration: ${duration}s, Recording: $recordingPath")
+        Log.i(TAG, "WhatsApp call finished. Phone: $rawPhone (clean: $phone), wasAnswered: $isActuallyAnswered, Duration: ${duration}s, Recording: $recordingPath")
 
         emitEvent(
             mapOf(
                 "event" to "CALL_COMPLETED",
-                "phoneNumber" to phone,
+                "phoneNumber" to rawPhone,
                 "duration" to duration.toInt(),
                 "timestamp" to System.currentTimeMillis(),
                 "callType" to "WHATSAPP",
@@ -514,10 +574,8 @@ class CallManager(
             )
         )
 
-        // Schedule WorkManager Upload ONLY if call was genuinely answered and audio exists
-        if (isSuccess && recordingPath.isNotEmpty() && java.io.File(recordingPath).exists()) {
-            enqueueUploadWorker(phone, name, start, duration, "WHATSAPP", recordingPath)
-        }
+        // Note: Flutter's CallQueueProvider.uploadRecordingManually handles the upload directly
+        // with live progress in the UI. WorkManager duplicate upload is skipped to prevent duplicate rows in Google Spreadsheet.
 
         // Return to AutoCall app screen
         bringAppToForeground()
