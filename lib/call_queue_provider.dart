@@ -49,6 +49,9 @@ class CallQueueProvider with ChangeNotifier {
   static const String _keyCooldown = 'autocall_cooldown_seconds';
   static const String _keyBackendUrl = 'autocall_backend_url';
   static const String _keyContactsApiUrl = 'autocall_contacts_api_url';
+  static const String _keyCallMode = 'autocall_call_mode';
+
+  String _callMode = 'GSM'; // 'GSM' or 'WHATSAPP'
 
   CallQueueProvider() {
     _loadPersistedData();
@@ -79,6 +82,15 @@ class CallQueueProvider with ChangeNotifier {
       (_callTimeoutSeconds - _callSecondsElapsed).clamp(0, _callTimeoutSeconds);
   bool get isCallTimerRunning => _isCallTimerRunning;
   List<Map<String, dynamic>> get deviceRecordings => _deviceRecordings;
+  String get callMode => _callMode;
+
+  void setCallMode(String mode) {
+    if (mode == 'GSM' || mode == 'WHATSAPP') {
+      _callMode = mode;
+      notifyListeners();
+      _saveSettingsToStorage();
+    }
+  }
 
   Future<int> syncContactsSilently() async {
     if (_isLoadingContactsFromApi) return 0;
@@ -282,6 +294,14 @@ class CallQueueProvider with ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
 
+      // Load call mode (GSM vs WHATSAPP)
+      if (prefs.containsKey(_keyCallMode)) {
+        final savedMode = prefs.getString(_keyCallMode);
+        if (savedMode == 'GSM' || savedMode == 'WHATSAPP') {
+          _callMode = savedMode!;
+        }
+      }
+
       // Load timeout
       if (prefs.containsKey(_keyTimeout)) {
         _callTimeoutSeconds = prefs.getInt(_keyTimeout) ?? 25;
@@ -383,6 +403,7 @@ class CallQueueProvider with ChangeNotifier {
       await prefs.setInt(_keyCooldown, _cooldownTotalSeconds);
       await prefs.setString(_keyBackendUrl, _backendUrl);
       await prefs.setString(_keyContactsApiUrl, _contactsApiUrl);
+      await prefs.setString(_keyCallMode, _callMode);
     } catch (e) {
       debugPrint('[CallQueueProvider] Failed to save settings to storage: $e');
     }
@@ -438,8 +459,6 @@ class CallQueueProvider with ChangeNotifier {
   }
 
   void _handleCallAnswered(Map<String, dynamic> event) {
-    _cancelCallTimeoutTimer();
-    _isCallTimerRunning = false;
     if (_currentProcessingId != null) {
       _updateItem(_currentProcessingId!, (item) {
         return item.copyWith(
@@ -485,7 +504,7 @@ class CallQueueProvider with ChangeNotifier {
           status: isCallSuccess
               ? CallStatus.completed
               : CallStatus.failedOrBusy,
-          durationSeconds: duration,
+          durationSeconds: isCallSuccess ? duration : 0,
           callTimestamp: callTimestamp,
           callType: callType,
           recordingFilePath: isCallSuccess
@@ -651,6 +670,7 @@ class CallQueueProvider with ChangeNotifier {
       targetItem.phoneNumber,
       name: targetItem.name,
       timeoutSeconds: _callTimeoutSeconds,
+      callMode: _callMode,
     );
 
     if (!dialSuccess) {
@@ -670,7 +690,7 @@ class CallQueueProvider with ChangeNotifier {
     }
   }
 
-  /// Starts the auto-hangup timer for unanswered, busy, or inactive numbers.
+  /// Starts the auto-hangup timer for unanswered numbers or maximum call duration limit.
   void _startCallTimeoutTimer() {
     _cancelCallTimeoutTimer();
     _callSecondsElapsed = 0;
@@ -685,22 +705,10 @@ class CallQueueProvider with ChangeNotifier {
         return;
       }
 
-      // Check if call has been answered / in active conversation
-      final currentItem = _queue.cast<CallItem?>().firstWhere(
-            (e) => e?.id == _currentProcessingId,
-            orElse: () => null,
-          );
-      if (currentItem?.status == CallStatus.inCall) {
-        timer.cancel();
-        _isCallTimerRunning = false;
-        notifyListeners();
-        return;
-      }
-
       _callSecondsElapsed++;
       notifyListeners();
 
-      // Check if timeout reached without remote party ending or answering
+      // Check if timeout reached (whether unanswered or max call duration reached)
       if (_callSecondsElapsed >= _callTimeoutSeconds) {
         timer.cancel();
         _isCallTimerRunning = false;
@@ -709,15 +717,20 @@ class CallQueueProvider with ChangeNotifier {
         // Automatically hang up the call on native Android!
         await _nativeBridge.endCall();
 
-        // Safety fallback: If dialer doesn't dispatch IDLE within 3s, force advance
-        Future.delayed(const Duration(milliseconds: 3000), () {
+        // Safety fallback: If dialer doesn't dispatch IDLE within delay, force advance
+        Future.delayed(Duration(milliseconds: _callMode == 'WHATSAPP' ? 3500 : 3000), () {
           if (_currentProcessingId != null) {
+            final currentItem = _queue.cast<CallItem?>().firstWhere(
+                  (e) => e?.id == _currentProcessingId,
+                  orElse: () => null,
+                );
+            final wasAnswered = currentItem?.status == CallStatus.inCall;
             _handleCallCompleted({
-              'phoneNumber': '',
-              'duration': 0,
+              'phoneNumber': currentItem?.phoneNumber ?? '',
+              'duration': wasAnswered ? _callTimeoutSeconds : 0,
               'timestamp': DateTime.now().millisecondsSinceEpoch,
-              'callType': 'TIMEOUT / TIDAK AKTIF',
-              'status': 'FAILED_OR_BUSY',
+              'callType': _callMode == 'WHATSAPP' ? 'WHATSAPP' : 'TIMEOUT / TIDAK AKTIF',
+              'status': wasAnswered ? 'COMPLETED' : 'FAILED_OR_BUSY',
               'recordingPath': '',
             });
           }

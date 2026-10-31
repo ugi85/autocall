@@ -78,14 +78,32 @@ class AutoCallAccessibilityService : AccessibilityService() {
         }
 
         /**
+         * Pre-dial safety: terminates any hanging call session without returning to AutoCall app.
+         */
+        fun dismissAnyLingeringCall() {
+            instance?.performPreDialCleanup()
+        }
+
+        /**
          * Checks if the active call on OEM InCallUI has been answered (timer is running / connected).
          */
         fun checkIsCallConnected(): Boolean {
             return instance?.isCallConnected() ?: false
         }
+
+        fun bringAppToFront(intent: android.content.Intent) {
+            try {
+                instance?.startActivity(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "bringAppToFront via accessibility service failed: ${e.localizedMessage}")
+            }
+        }
+
+        var isWhatsAppPendingCall: Boolean = false
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var lastWhatsAppClickTimestamp: Long = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -139,18 +157,375 @@ class AutoCallAccessibilityService : AccessibilityService() {
             val pkg = event.packageName?.toString() ?: ""
             if (isExcludedPackage(pkg)) return
 
-            // If foreground service is running and countdown is not yet paused,
-            // monitor if the remote party answered and call timer started ticking!
-            if (AutoCallForegroundService.isRunning && !AutoCallForegroundService.isTimeoutPaused) {
-                val source = event.source
-                if (source != null && hasConnectedCallIndicator(source)) {
-                    Log.i(TAG, "Call answered detected via accessibility event in $pkg! Halting timeout.")
-                    CallManager.instance?.notifyCallAnswered()
+            // Handle WhatsApp call launch automation if pending
+            if (isWhatsAppPendingCall && pkg.contains("whatsapp")) {
+                val root = rootInActiveWindow ?: event.source
+                if (root != null) {
+                    tryAutomateWhatsAppCall(root)
+                }
+            }
+
+            // Monitor active call status while AutoCallForegroundService is running
+            if (AutoCallForegroundService.isRunning) {
+                if (AutoCallForegroundService.currentCallMode == AutoCallForegroundService.CALL_MODE_WHATSAPP) {
+                    if (pkg.contains("whatsapp")) {
+                        val root = getWhatsAppRootWindow() ?: rootInActiveWindow ?: event.source
+                        if (root != null) {
+                            // A: Check if WhatsApp call has ended naturally (screen shows 'call ended', 'panggilan berakhir', etc.)
+                            if (hasWhatsAppCallEndedIndicator(root)) {
+                                Log.i(TAG, "WhatsApp call ended indicator detected on screen! Finishing call session.")
+                                AutoCallForegroundService.stop(applicationContext)
+                                CallManager.instance?.bringAppToForeground()
+                                return
+                            }
+
+                            // B: If call was marked answered and VoIP screen is no longer active (returned to chat), call ended!
+                            val wasAnswered = CallManager.instance?.wasCallAnswered == true
+                            val answeredAt = CallManager.instance?.callAnsweredTimestamp ?: 0L
+                            if (wasAnswered && answeredAt > 0L && (System.currentTimeMillis() - answeredAt) > 2500L) {
+                                val metrics = resources.displayMetrics
+                                if (!isWhatsAppVoipActive(root, metrics.heightPixels)) {
+                                    Log.i(TAG, "WhatsApp VoIP session closed after active conversation! Finishing call session.")
+                                    AutoCallForegroundService.stop(applicationContext)
+                                    CallManager.instance?.bringAppToForeground()
+                                    return
+                                }
+                            }
+
+                            // C: Detect call answered (connected timer ticking)
+                            if (!wasAnswered && isWhatsAppCallConnected(root)) {
+                                Log.i(TAG, "WhatsApp call answered detected! Updating status.")
+                                CallManager.instance?.notifyCallAnswered()
+                            }
+                        }
+                    }
+                } else {
+                    if (!isExcludedPackage(pkg) && !AutoCallForegroundService.isTimeoutPaused) {
+                        val source = event.source ?: rootInActiveWindow
+                        if (source != null && hasConnectedCallIndicator(source)) {
+                            Log.i(TAG, "Call answered detected via accessibility event in $pkg! Halting timeout.")
+                            CallManager.instance?.notifyCallAnswered()
+                        }
+                    }
                 }
             }
         } catch (e: Throwable) {
             Log.w(TAG, "Error processing accessibility event: ${e.localizedMessage}")
         }
+    }
+
+    private fun getWhatsAppRootWindow(): AccessibilityNodeInfo? {
+        val activeRoot = rootInActiveWindow
+        if (activeRoot != null && activeRoot.packageName?.toString()?.contains("whatsapp") == true) {
+            return activeRoot
+        }
+        try {
+            val winList = windows
+            if (!winList.isNullOrEmpty()) {
+                for (w in winList) {
+                    val r = w.root ?: continue
+                    if (r.packageName?.toString()?.contains("whatsapp") == true) {
+                        return r
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return null
+    }
+
+    private fun hasWhatsAppCallEndedIndicator(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        if (viewId.contains("entry") || viewId.contains("input") || viewId.contains("send") || viewId.contains("bubble")) {
+            return false
+        }
+
+        val text = node.text?.toString()?.lowercase()?.trim() ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase()?.trim() ?: ""
+        val candidate = "$text $desc".trim()
+
+        if (candidate.isNotEmpty()) {
+            val endedKeywords = listOf(
+                "panggilan berakhir", "call ended", "panggilan ditolak", "call declined",
+                "tidak terjawab", "missed call", "tidak dapat tersambung", "couldn't connect",
+                "panggilan dibatalkan", "call cancelled", "call canceled", "panggilan selesai"
+            )
+            if (endedKeywords.any { candidate.contains(it) }) {
+                return true
+            }
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (hasWhatsAppCallEndedIndicator(child)) return true
+        }
+        return false
+    }
+
+    /**
+     * Determines whether a WhatsApp VoIP call has been answered (chronometer ticking).
+     * Strictly verifies that the screen is NOT in "Berdering" / "Memanggil" state,
+     * and guarantees that chat history timestamps (e.g. 19.39, 12.25) are NEVER parsed as call duration.
+     */
+    fun isWhatsAppCallConnected(root: AccessibilityNodeInfo?): Boolean {
+        if (root == null) return false
+
+        // 1. If screen contains ANY ringing/calling indicator, definitely NOT connected yet!
+        if (isScreenInRingingOrDialingState(root)) {
+            return false
+        }
+
+        // 2. Screen must have VoIP elements (full screen or minimized top banner)
+        if (!hasVoipInCallElements(root)) {
+            return false
+        }
+
+        // 3. Search for duration timer strictly outside chat bubbles and status bar
+        val metrics = resources.displayMetrics
+        return findWhatsAppVoipTimer(root, metrics.heightPixels)
+    }
+
+    private fun findWhatsAppVoipTimer(node: AccessibilityNodeInfo?, screenHeight: Int): Boolean {
+        if (node == null) return false
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+
+        // Strictly ignore chat messages, conversation list, input area, and system status bar
+        if (viewId.contains("entry") || viewId.contains("message") ||
+            viewId.contains("conversation") || viewId.contains("chat") ||
+            viewId.contains("input") || viewId.contains("send") ||
+            viewId.contains("bubble") || viewId.contains("list") ||
+            viewId.contains("clock") || viewId.contains("status_bar")
+        ) {
+            return false
+        }
+
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+
+        // Safety: System status bar is in top 8% of screen (where clock like 21:50 is located)
+        // WhatsApp VoIP timer is in upper-middle area (between 8% and 65% of screen height)
+        if (rect.centerY() < (screenHeight * 0.08f) || rect.centerY() > (screenHeight * 0.65f)) {
+            return false
+        }
+
+        val text = node.text?.toString()?.trim() ?: ""
+        val desc = node.contentDescription?.toString()?.trim() ?: ""
+        val candidate = if (text.isNotEmpty()) text else desc
+
+        // Match call elapsed timer: strictly 00:02 up to 59:59 (never match clock hours 10-23)
+        // Must start with 00: or 0[0-9]:
+        val callTimerPattern = Regex("""^0[0-9]:[0-5][0-9](?::[0-5][0-9])?$""")
+        if (callTimerPattern.matches(candidate)) {
+            val parts = candidate.split(":")
+            val timerSeconds = if (parts.size == 2) {
+                (parts[0].toIntOrNull() ?: 0) * 60 + (parts[1].toIntOrNull() ?: 0)
+            } else if (parts.size == 3) {
+                (parts[0].toIntOrNull() ?: 0) * 3600 + (parts[1].toIntOrNull() ?: 0) * 60 + (parts[2].toIntOrNull() ?: 0)
+            } else 0
+
+            // CRITICAL: 00:00 or 00:01 while still ringing is NOT an active conversation!
+            // Conversation must have progressed to at least 2 seconds (00:02+)
+            if (timerSeconds < 2) {
+                return false
+            }
+
+            // Extra sanity check: Call duration timer cannot exceed actual elapsed call initiation time + 5s!
+            val start = CallManager.instance?.callInitiatedTimestamp ?: 0L
+            if (start > 0L) {
+                val elapsedSinceDial = (System.currentTimeMillis() - start) / 1000
+                if (timerSeconds > (elapsedSinceDial + 5)) {
+                    // This is a timestamp or clock, NOT this call's timer!
+                    return false
+                }
+            }
+            Log.i(TAG, "WhatsApp valid call timer verified: '$candidate' on view: $viewId at (${rect.centerX()}, ${rect.centerY()})")
+            return true
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (findWhatsAppVoipTimer(child, screenHeight)) return true
+        }
+        return false
+    }
+
+    /**
+     * Determines whether the active screen belongs to an active WhatsApp VoIP Call screen.
+     */
+    private fun isWhatsAppVoipScreen(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        val pkg = node.packageName?.toString() ?: ""
+        if (!pkg.contains("whatsapp")) return false
+        return hasVoipInCallElements(node)
+    }
+
+    private fun hasVoipInCallElements(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        // Strictly ignore chat conversation messages and text entry
+        if (viewId.contains("entry") || viewId.contains("message") ||
+            viewId.contains("conversation") || viewId.contains("chat") ||
+            viewId.contains("input") || viewId.contains("send") ||
+            viewId.contains("bubble") || viewId.contains("list")
+        ) {
+            return false
+        }
+
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val combined = "$desc $text $viewId".trim()
+
+        if (viewId.contains("end_call") || viewId.contains("call_end") || viewId.contains("voip") ||
+            viewId.contains("call_status") || viewId.contains("call_time") || viewId.contains("footer_end_call") ||
+            viewId.contains("mute_btn") || viewId.contains("speaker_btn") || viewId.contains("incall") ||
+            combined.contains("akhiri") || combined.contains("tutup panggilan") || combined.contains("tutup telepon") ||
+            combined.contains("putuskan") || combined.contains("end call") || combined.contains("hang up") ||
+            combined.contains("berdering") || combined.contains("ringing") ||
+            combined.contains("memanggil") || combined.contains("calling") || combined.contains("menghubungi") ||
+            combined.contains("pelantang") || combined.contains("pengeras") ||
+            combined.contains("bungkam") || combined.contains("matikan mikrofon")
+        ) {
+            return true
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (hasVoipInCallElements(child)) return true
+        }
+        return false
+    }
+
+    private fun tryAutomateWhatsAppCall(root: AccessibilityNodeInfo): Boolean {
+        val now = System.currentTimeMillis()
+        if (now - lastWhatsAppClickTimestamp < 4000L) {
+            return false
+        }
+
+        val metrics = resources.displayMetrics
+        val screenHeight = metrics.heightPixels
+
+        // 1. Look for Confirmation Dialog Button ("PANGGIL" / "CALL" / android:id/button1)
+        val confirmBtn = findConfirmationDialogButton(root)
+        if (confirmBtn != null && confirmBtn.isClickable) {
+            Log.i(TAG, "WhatsApp confirmation dialog found. Clicking PANGGIL/CALL!")
+            lastWhatsAppClickTimestamp = now
+            isWhatsAppPendingCall = false
+            val clicked = confirmBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                val rect = Rect()
+                confirmBtn.getBoundsInScreen(rect)
+                if (rect.centerX() > 0 && rect.centerY() > 0) {
+                    dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+                }
+            }
+            return true
+        }
+
+        // 2. Look for Voice Call icon in Conversation toolbar strictly in top bar (Y < 450)
+        val callIcon = findWhatsAppVoiceCallButton(root, screenHeight)
+        if (callIcon != null) {
+            val rect = Rect()
+            callIcon.getBoundsInScreen(rect)
+            Log.i(TAG, "WhatsApp voice call button found at (${rect.centerX()}, ${rect.centerY()}). Clicking once!")
+            lastWhatsAppClickTimestamp = now
+            isWhatsAppPendingCall = false
+
+            // Click ONCE only! Never dispatch duplicate tap if action click succeeded!
+            val clicked = callIcon.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked && rect.centerX() > 0) {
+                dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+            }
+
+            // Also check for popup dialog after 500ms
+            mainHandler.postDelayed({
+                try {
+                    val activeRoot = rootInActiveWindow
+                    if (activeRoot != null) {
+                        val dlgBtn = findConfirmationDialogButton(activeRoot)
+                        if (dlgBtn != null && dlgBtn.isClickable) {
+                            Log.i(TAG, "Delayed check: Clicking WhatsApp confirmation dialog!")
+                            dlgBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        }
+                    }
+                } catch (_: Exception) {}
+            }, 500L)
+
+            return true
+        }
+
+        return false
+    }
+
+    private fun findConfirmationDialogButton(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+
+        if (node.isClickable && (
+            viewId.endsWith(":id/button1") ||
+            text.equals("panggil", ignoreCase = true) || text.equals("call", ignoreCase = true) ||
+            desc.equals("panggil", ignoreCase = true) || desc.equals("call", ignoreCase = true)
+        )) {
+            return node
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findConfirmationDialogButton(child)
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun findWhatsAppVoiceCallButton(node: AccessibilityNodeInfo?, screenHeight: Int): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+
+        // Must be located in top action bar (top 450px) and not too small
+        if (rect.top < 450 && rect.width() > 30 && rect.height() > 30) {
+            val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+            val viewId = node.viewIdResourceName?.lowercase() ?: ""
+
+            // Exclude video call
+            val isVideo = desc.contains("video") || viewId.contains("video")
+            if (!isVideo) {
+                if (desc.contains("panggilan suara") || desc.contains("voice call") ||
+                    desc.contains("panggilan audio") || desc.contains("telepon suara") ||
+                    (desc.contains("panggilan") && !desc.contains("video")) ||
+                    (desc.contains("call") && !desc.contains("video")) ||
+                    viewId.contains("menuitem_conversations_call") || viewId.contains("action_call") ||
+                    viewId.contains("menuitem_call")
+                ) {
+                    return node
+                }
+            }
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findWhatsAppVoiceCallButton(child, screenHeight)
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun findNodeByText(node: AccessibilityNodeInfo?, targetKeywords: List<String>): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+
+        if (node.isClickable && (targetKeywords.any { text.equals(it, ignoreCase = true) } || targetKeywords.any { desc.equals(it, ignoreCase = true) })) {
+            return node
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findNodeByText(child, targetKeywords)
+            if (found != null) return found
+        }
+        return null
     }
 
     /**
@@ -159,6 +534,22 @@ class AutoCallAccessibilityService : AccessibilityService() {
      */
     fun isCallConnected(): Boolean {
         try {
+            if (AutoCallForegroundService.currentCallMode == AutoCallForegroundService.CALL_MODE_WHATSAPP) {
+                val waRoot = getWhatsAppRootWindow()
+                if (waRoot != null) {
+                    return isWhatsAppCallConnected(waRoot)
+                }
+                return false
+            }
+
+            val activeRoot = rootInActiveWindow
+            if (activeRoot != null) {
+                val pkg = activeRoot.packageName?.toString() ?: ""
+                if (!isExcludedPackage(pkg) && hasConnectedCallIndicator(activeRoot)) {
+                    return true
+                }
+            }
+
             val winList = windows
             if (!winList.isNullOrEmpty()) {
                 for (window in winList) {
@@ -170,21 +561,54 @@ class AutoCallAccessibilityService : AccessibilityService() {
                     }
                 }
             }
-            val activeRoot = rootInActiveWindow
-            if (activeRoot != null) {
-                val pkg = activeRoot.packageName?.toString() ?: ""
-                if (!isExcludedPackage(pkg) && hasConnectedCallIndicator(activeRoot)) {
-                    return true
-                }
-            }
         } catch (e: Throwable) {
             Log.w(TAG, "Error checking isCallConnected: ${e.localizedMessage}")
         }
         return false
     }
 
+    private fun isScreenInRingingOrDialingState(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        if (text.contains("berdering") || text.contains("ringing") ||
+            text.contains("memanggil") || text.contains("dialing") ||
+            text.contains("calling") || text.contains("menghubungi") ||
+            text.contains("menghubungkan") || text.contains("connecting") ||
+            desc.contains("berdering") || desc.contains("ringing") ||
+            desc.contains("memanggil") || desc.contains("dialing") ||
+            desc.contains("menghubungkan") || desc.contains("connecting")
+        ) {
+            return true
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (isScreenInRingingOrDialingState(child)) return true
+        }
+        return false
+    }
+
     private fun hasConnectedCallIndicator(node: AccessibilityNodeInfo?): Boolean {
         if (node == null) return false
+
+        // Crucial: If any visible node on this screen says "Berdering", "Memanggil", "Calling", "Ringing":
+        // The call is definitely still dialing / ringing, NOT connected yet!
+        if (isScreenInRingingOrDialingState(node)) {
+            return false
+        }
+
+        // WhatsApp specific safeguard: Never scan chat bubbles, timestamps, or message views!
+        val pkg = node.packageName?.toString() ?: ""
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        if (pkg.contains("whatsapp")) {
+            if (viewId.contains("entry") || viewId.contains("message_text") ||
+                viewId.contains("conversation") || viewId.contains("chat_list") ||
+                viewId.contains("input_layout") || viewId.contains("send") ||
+                viewId.contains("bubble")
+            ) {
+                return false
+            }
+        }
 
         val text = node.text?.toString()?.trim() ?: ""
         val desc = node.contentDescription?.toString()?.trim() ?: ""
@@ -195,7 +619,9 @@ class AutoCallAccessibilityService : AccessibilityService() {
         val isDialing = lowerCombined.contains("memanggil") ||
                 lowerCombined.contains("dialing") ||
                 lowerCombined.contains("calling") ||
-                lowerCombined.contains("menghubungi")
+                lowerCombined.contains("menghubungi") ||
+                lowerCombined.contains("berdering") ||
+                lowerCombined.contains("ringing")
 
         if (!isDialing) {
             // 1. Check Chronometer widget class (direct indicator in Android)
@@ -264,6 +690,11 @@ class AutoCallAccessibilityService : AccessibilityService() {
         val metrics = resources.displayMetrics
         val screenWidth = metrics.widthPixels
         val screenHeight = metrics.heightPixels
+
+        // Route to dedicated WhatsApp end-call logic if in WhatsApp mode
+        if (AutoCallForegroundService.currentCallMode == AutoCallForegroundService.CALL_MODE_WHATSAPP) {
+            return performWhatsAppEndCall(screenWidth, screenHeight)
+        }
 
         try {
             val winList = windows
@@ -351,6 +782,7 @@ class AutoCallAccessibilityService : AccessibilityService() {
                 p.contains("telephon") ||
                 p.contains("contact") ||
                 p.contains("caller") ||
+                p.contains("whatsapp") ||
                 (p.contains("call") && !p.contains("autocall"))
     }
 
@@ -614,5 +1046,300 @@ class AutoCallAccessibilityService : AccessibilityService() {
             Log.e(TAG, "dispatchTap error at ($x, $y): ${e.localizedMessage}")
             false
         }
+    }
+
+    fun performPreDialCleanup() {
+        val metrics = resources.displayMetrics
+        val screenHeight = metrics.heightPixels
+        val screenWidth = metrics.widthPixels
+        try {
+            val root = getWhatsAppRootWindow()
+            if (root != null) {
+                if (isWhatsAppVoipActive(root, screenHeight)) {
+                    Log.i(TAG, "Pre-dial cleanup: terminating lingering WhatsApp VoIP session.")
+                    val endBtn = findWhatsAppEndCallButton(root, screenWidth, screenHeight)
+                    if (endBtn != null) {
+                        clickAndTapNode(endBtn, screenHeight)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Terminate active or ringing WhatsApp VoIP call.
+     * Targeted strictly at the real End Call button on the WhatsApp call screen,
+     * with direct coordinate tap on the red 'Akhiri' button.
+     * NEVER uses GLOBAL_ACTION_BACK to prevent minimizing the call into background.
+     */
+    fun performWhatsAppEndCall(screenWidth: Int, screenHeight: Int): Boolean {
+        Log.i(TAG, "AutoCallAccessibilityService: Executing performWhatsAppEndCall...")
+
+        // Strictly target WhatsApp window (never AutoCall or other apps)
+        val waRoot = getWhatsAppRootWindow()
+        if (waRoot == null) {
+            val active = rootInActiveWindow
+            if (active?.packageName?.toString()?.contains("whatsapp") != true) {
+                Log.w(TAG, "No WhatsApp window found in active windows (active: ${active?.packageName}). Skipping hangup.")
+                return false
+            }
+        }
+
+        val targetRoot = waRoot ?: rootInActiveWindow ?: return false
+
+        // 1. Dismiss any WhatsApp confirmation dialog ("Panggil?", "Izin", etc.)
+        dismissAnyWhatsAppDialog(targetRoot)
+
+        // 2. Search for the End Call / Hangup button node
+        val endBtn = findWhatsAppEndCallButton(targetRoot, screenWidth, screenHeight)
+
+        if (endBtn != null) {
+            val rect = Rect()
+            endBtn.getBoundsInScreen(rect)
+            val tapX = rect.centerX().toFloat()
+            val tapY = rect.centerY().toFloat()
+            val viewId = endBtn.viewIdResourceName ?: "no_id"
+            val desc = endBtn.contentDescription?.toString() ?: ""
+            val text = endBtn.text?.toString() ?: ""
+            Log.i(TAG, "Found WhatsApp end-call button at ($tapX, $tapY) [id=$viewId, desc='$desc', text='$text']. Executing click & gesture tap!")
+
+            // Accessibility action click on node and clickable parents
+            if (endBtn.isClickable) {
+                endBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }
+            var parent = endBtn.parent
+            while (parent != null) {
+                if (parent.isClickable) {
+                    parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    break
+                }
+                parent = parent.parent
+            }
+
+            // Hardware gesture tap on the detected button coordinate
+            if (tapX > 0 && tapY > (screenHeight * 0.45f) && tapY < screenHeight) {
+                dispatchTap(tapX, tapY)
+            }
+        } else {
+            Log.w(TAG, "WhatsApp end-call button node not found by id/text.")
+        }
+
+        // 3. Guaranteed Coordinate Tap on VoIP red button:
+        // On WhatsApp VoIP call screen, the red 'Akhiri' button is at bottom-right (X ~80%, Y ~86%)
+        val rightX = screenWidth * 0.80f
+        val bottomY = screenHeight * 0.86f
+        val centerX = screenWidth * 0.50f
+        Log.i(TAG, "Executing guaranteed VoIP gesture tap at ($rightX, $bottomY)...")
+        dispatchTap(rightX, bottomY)
+
+        // Staggered follow-up tap at 120ms
+        mainHandler.postDelayed({
+            dispatchTap(rightX, bottomY)
+            dispatchTap(centerX, bottomY)
+        }, 120L)
+
+        // 4. Verification check & Retry at 350ms
+        mainHandler.postDelayed({
+            try {
+                val curWaRoot = getWhatsAppRootWindow()
+                if (curWaRoot != null && isWhatsAppVoipActive(curWaRoot, screenHeight)) {
+                    Log.i(TAG, "Verification at 350ms: WhatsApp call still active! Retrying hangup...")
+                    dispatchTap(rightX, bottomY)
+                    dispatchTap(centerX, bottomY)
+                    val retryBtn = findWhatsAppEndCallButton(curWaRoot, screenWidth, screenHeight)
+                    retryBtn?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                } else {
+                    Log.i(TAG, "Verification at 350ms: WhatsApp call successfully terminated!")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Verification check error: ${e.localizedMessage}")
+            }
+        }, 350L)
+
+        // 5. Transition directly back to AutoCall app at 800ms
+        mainHandler.postDelayed({
+            CallManager.instance?.bringAppToForeground()
+        }, 800L)
+
+        return true
+    }
+
+    private fun dismissAnyWhatsAppDialog(node: AccessibilityNodeInfo?) {
+        if (node == null) return
+        try {
+            val text = node.text?.toString()?.lowercase() ?: ""
+            val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+            val viewId = node.viewIdResourceName?.lowercase() ?: ""
+
+            if (node.isClickable && (
+                text == "batal" || text == "cancel" || text == "tutup" || text == "close" ||
+                desc == "batal" || desc == "cancel" || desc == "tutup" || desc == "close" ||
+                viewId.endsWith(":id/button2")
+            )) {
+                Log.i(TAG, "Dismissing WhatsApp dialog button: text='$text', desc='$desc', id='$viewId'")
+                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                return
+            }
+
+            for (i in 0 until node.childCount) {
+                dismissAnyWhatsAppDialog(node.getChild(i))
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Checks if WhatsApp is currently showing ANY VoIP call elements (ringing, calling, connected, full-screen, or banner).
+     */
+    fun isWhatsAppVoipActive(node: AccessibilityNodeInfo?, screenHeight: Int): Boolean {
+        if (node == null) return false
+        val pkg = node.packageName?.toString() ?: ""
+        if (!pkg.contains("whatsapp")) return false
+
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        // Strictly ignore chat conversation messages and text entry
+        if (viewId.contains("entry") || viewId.contains("message") ||
+            viewId.contains("conversation") || viewId.contains("chat") ||
+            viewId.contains("input") || viewId.contains("send") ||
+            viewId.contains("bubble") || viewId.contains("list")
+        ) {
+            return false
+        }
+
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val combined = "$desc $text $viewId".trim()
+
+        if (viewId.contains("end_call") || viewId.contains("call_end") || viewId.contains("voip") ||
+            viewId.contains("call_status") || viewId.contains("footer_end_call") || viewId.contains("incall") ||
+            combined.contains("akhiri") || combined.contains("tutup panggilan") || combined.contains("tutup telepon") ||
+            combined.contains("putuskan") || combined.contains("end call") || combined.contains("hang up") ||
+            combined.contains("berdering") || combined.contains("ringing") ||
+            combined.contains("memanggil") || combined.contains("calling") || combined.contains("menghubungi") ||
+            combined.contains("sedang bicara") || combined.contains("terhubung") || combined.contains("bicara")
+        ) {
+            return true
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (isWhatsAppVoipActive(child, screenHeight)) return true
+        }
+        return false
+    }
+
+    /**
+     * Recursively traverses nodes to find WhatsApp's End Call / Hangup button.
+     * Evaluates IDs, Indonesian and English descriptions, and bottom call bar geometry.
+     * STRICT RULE: The End Call button is ALWAYS in the bottom area (Y > 55% of screenHeight).
+     * Any node in the top 55% (like "Tambah orang", Menu, Back arrow) is STRICTLY IGNORED!
+     */
+    fun findWhatsAppEndCallButton(
+        node: AccessibilityNodeInfo?,
+        screenWidth: Int,
+        screenHeight: Int
+    ): AccessibilityNodeInfo? {
+        if (node == null) return null
+
+        // STRICT SAFETY: Never match anything outside WhatsApp!
+        val pkg = node.packageName?.toString() ?: ""
+        if (pkg.isNotEmpty() && !pkg.contains("whatsapp")) {
+            return null
+        }
+
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+
+        // Safety check: Skip system gesture navigation bar (bottom 35px)
+        if (rect.centerY() >= screenHeight - 35) {
+            return null
+        }
+
+        // WhatsApp End Call button in full-screen or call sheet is in the lower half of the screen
+        val isInBottomCallArea = rect.centerY() > (screenHeight * 0.45f)
+
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+
+        // Exclusions: Only exclude the current node if it represents mic, speaker, camera, video, etc.
+        val isExcludedFeature = desc.contains("senyap") || desc.contains("mute") ||
+                desc.contains("bungkam") || desc.contains("mikrofon") || desc.contains("mic") ||
+                desc.contains("speaker") || desc.contains("pelantang") || desc.contains("pengeras") ||
+                desc.contains("kamera") || desc.contains("video") || desc.contains("bagikan") ||
+                desc.contains("tambah") || desc.contains("peserta") || desc.contains("participant")
+
+        // 1. Match by Resource ID (in bottom call area)
+        val isEndId = isInBottomCallArea && (
+            viewId.contains("end_call") || viewId.contains("call_end") ||
+            viewId.contains("hangup") || viewId.contains("disconnect") ||
+            viewId.contains("footer_end_call") || viewId.contains("button_end_call") ||
+            viewId.contains("btn_end") || viewId.contains("btn_call_end") ||
+            viewId.contains("call_close")
+        )
+
+        // 2. Match by ContentDescription or Text (in bottom call area)
+        val isEndKeyword = isInBottomCallArea && (
+            desc.contains("akhiri") || text.contains("akhiri") ||
+            desc.contains("tutup panggilan") || text.contains("tutup panggilan") ||
+            desc.contains("tutup telepon") || text.contains("tutup telepon") ||
+            desc.contains("putuskan") || text.contains("putuskan") ||
+            desc.contains("tolak") || text.contains("tolak") ||
+            desc.contains("end call") || text.contains("end call") ||
+            desc.contains("hang up") || text.contains("hang up") ||
+            desc.contains("hangup") || text.contains("hangup") ||
+            desc.contains("disconnect") || text.contains("disconnect") ||
+            desc.contains("decline") || text.contains("decline") ||
+            desc.contains("leave call") || text.contains("leave call") ||
+            desc.contains("batalkan panggilan") || text.contains("batalkan panggilan") ||
+            desc == "end" || text == "end" || desc == "tutup" || text == "tutup" ||
+            desc == "akhiri" || text == "akhiri" || desc == "batal" || text == "batal"
+        )
+
+        if ((isEndId || isEndKeyword) && !isExcludedFeature) {
+            val parent = node.parent
+            if (parent != null) {
+                // If this is the label text "Akhiri", look for the sibling red ImageView or clickable view
+                for (i in 0 until parent.childCount) {
+                    val sibling = parent.getChild(i) ?: continue
+                    if (sibling != node && (sibling.isClickable ||
+                            sibling.className?.toString()?.contains("ImageView") == true ||
+                            sibling.className?.toString()?.contains("Button") == true)) {
+                        return sibling
+                    }
+                }
+                if (parent.isClickable) return parent
+            }
+            if (node.isClickable) return node
+            return node
+        }
+
+        // Geometric fallback candidate: round button in bottom call area
+        val isBottomCallBtn = isInBottomCallArea && rect.centerY() in (screenHeight * 0.60f).toInt()..(screenHeight - 50) &&
+                (rect.centerX() > (screenWidth * 0.60f) || rect.centerX() in (screenWidth * 0.35f).toInt()..(screenWidth * 0.65f).toInt()) &&
+                rect.width() in 40..350 && rect.height() in 40..350 &&
+                !isExcludedFeature &&
+                (node.isClickable || node.parent?.isClickable == true ||
+                 node.className?.toString()?.contains("Button", ignoreCase = true) == true ||
+                 node.className?.toString()?.contains("ImageView", ignoreCase = true) == true)
+
+        // Recurse down children first to find specific text/id match
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findWhatsAppEndCallButton(child, screenWidth, screenHeight)
+            if (found != null) return found
+        }
+
+        // If no child matched specific ID/text, use geometric candidate if applicable
+        if (isBottomCallBtn) {
+            if (node.isClickable) return node
+            var parent = node.parent
+            while (parent != null) {
+                if (parent.isClickable) return parent
+                parent = parent.parent
+            }
+            return node
+        }
+
+        return null
     }
 }

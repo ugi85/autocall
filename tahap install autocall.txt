@@ -3,4 +3,9 @@ Hape wajib memiliki fitur autorecord dan autocall asistant
 - izinkan sumber tidak dikenal (wa)
 - nonaktifkan Playprotect (playstore)
 - rekam otomatis semua panggilan (phone default)
-- jika autocall assitent terblokir,Buka kunci-izinkan setelan terbatas pada aplikasi autocall (titik 3 dikanan atas)
+- jika autocall assitent terblokir, Buka kunci-izinkan setelan terbatas pada aplikasi autocall (titik 3 dikanan atas)
+
+* Kebutuhan Khusus Panggilan WhatsApp:
+- Aplikasi WhatsApp / WhatsApp Business sudah terpasang dan login aktif.
+- Berikan izin Mikrofon (Audio Record) pada aplikasi AutoCall saat diminta.
+- Gunakan mode Speaker (Handsfree) saat berbicara di WhatsApp agar suara lawan bicara tertangkap jelas oleh perekam in-app AutoCall.

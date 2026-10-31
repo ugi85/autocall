@@ -199,6 +199,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           // 4. Cooldown / Active Call Status Banner
           if (provider.isInCooldown) _buildCooldownBanner(context, provider),
 
+          // 4b. Call Mode Selector (GSM vs WhatsApp)
+          _buildCallModeSelector(context, provider),
+
           // 5. Autocall Action Toolbar
           _buildControlToolbar(context, provider),
 
@@ -366,6 +369,96 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
             valueColor: AlwaysStoppedAnimation<Color>(Colors.amber.shade700),
           ),
         ],
+      ),
+    );
+  }
+
+  // =================== CALL MODE SELECTOR ===================
+  Widget _buildCallModeSelector(
+    BuildContext context,
+    CallQueueProvider provider,
+  ) {
+    final isWhatsApp = provider.callMode == 'WHATSAPP';
+    final isRunning = provider.isQueueRunning;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade100,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.shade300),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: isRunning ? null : () => provider.setCallMode('GSM'),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 7),
+                  decoration: BoxDecoration(
+                    color: !isWhatsApp ? Colors.blue.shade700 : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.phone_in_talk,
+                        size: 15,
+                        color: !isWhatsApp ? Colors.white : Colors.black87,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Panggilan GSM',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: !isWhatsApp ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 4),
+            Expanded(
+              child: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: isRunning ? null : () => provider.setCallMode('WHATSAPP'),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 7),
+                  decoration: BoxDecoration(
+                    color: isWhatsApp ? Colors.green.shade700 : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.chat,
+                        size: 15,
+                        color: isWhatsApp ? Colors.white : Colors.black87,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Panggilan WhatsApp',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: isWhatsApp ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2128,7 +2221,11 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                   text: TextSpan(
                     style: const TextStyle(fontSize: 13, color: Colors.black87),
                     children: [
-                      const TextSpan(text: 'Sedang Memanggil: '),
+                      TextSpan(
+                        text: provider.callMode == 'WHATSAPP'
+                            ? 'Memanggil (WhatsApp): '
+                            : 'Sedang Memanggil: ',
+                      ),
                       TextSpan(
                         text:
                             '${activeItem.name.isNotEmpty ? activeItem.name : activeItem.phoneNumber} (${activeItem.phoneNumber})',
@@ -2168,10 +2265,12 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Auto-hangup jika tidak diangkat/sibuk, lalu lanjut ke antrean',
-                  style: TextStyle(fontSize: 11, color: Colors.black54),
+                  provider.callMode == 'WHATSAPP'
+                      ? 'Auto-close jika tidak diangkat. Gunakan mode Speaker agar suara lawan bicara terekam jelas.'
+                      : 'Auto-hangup jika tidak diangkat/sibuk, lalu lanjut ke antrean',
+                  style: const TextStyle(fontSize: 11, color: Colors.black54),
                 ),
               ),
               Row(

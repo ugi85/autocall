@@ -39,10 +39,11 @@ class MainActivity : FlutterActivity(), MethodChannel.MethodCallHandler, EventCh
                 val phoneNumber = call.argument<String>("phoneNumber")
                 val name = call.argument<String>("name") ?: ""
                 val timeoutSeconds = call.argument<Int>("timeoutSeconds") ?: 25
+                val callMode = call.argument<String>("callMode") ?: "GSM"
                 if (phoneNumber.isNullOrBlank()) {
                     result.error("INVALID_ARGUMENT", "Phone number cannot be empty", null)
                 } else {
-                    val initiated = callManager.startCall(phoneNumber, name, timeoutSeconds)
+                    val initiated = callManager.startCall(phoneNumber, name, timeoutSeconds, callMode)
                     result.success(initiated)
                 }
             }

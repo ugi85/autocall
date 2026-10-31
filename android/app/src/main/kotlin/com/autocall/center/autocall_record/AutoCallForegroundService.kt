@@ -58,6 +58,13 @@ class AutoCallForegroundService : Service() {
         const val EXTRA_PHONE_NUMBER = "EXTRA_PHONE_NUMBER"
         const val EXTRA_NAME = "EXTRA_NAME"
         const val EXTRA_TIMEOUT_SECONDS = "EXTRA_TIMEOUT_SECONDS"
+        const val EXTRA_CALL_MODE = "EXTRA_CALL_MODE"
+
+        const val CALL_MODE_GSM = "GSM"
+        const val CALL_MODE_WHATSAPP = "WHATSAPP"
+
+        var currentCallMode: String = CALL_MODE_GSM
+            private set
 
         var isRunning: Boolean = false
             private set
@@ -71,12 +78,20 @@ class AutoCallForegroundService : Service() {
         var instance: AutoCallForegroundService? = null
             private set
 
-        fun start(context: Context, phoneNumber: String, name: String, timeoutSeconds: Int) {
+        fun start(
+            context: Context,
+            phoneNumber: String,
+            name: String,
+            timeoutSeconds: Int,
+            callMode: String = CALL_MODE_GSM
+        ) {
+            currentCallMode = callMode
             val intent = Intent(context, AutoCallForegroundService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_PHONE_NUMBER, phoneNumber)
                 putExtra(EXTRA_NAME, name)
                 putExtra(EXTRA_TIMEOUT_SECONDS, timeoutSeconds)
+                putExtra(EXTRA_CALL_MODE, callMode)
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -97,11 +112,11 @@ class AutoCallForegroundService : Service() {
         }
 
         fun pauseTimeout(context: Context) {
-            // Instantly pause timer in-memory so background thread cannot tick even 1 more second
+            // User explicitly pauses timer
             isTimeoutPaused = true
             instance?.stopCountdown()
             instance?.mainHandler?.post {
-                instance?.updateNotification("Panggilan Aktif (Terhubung)")
+                instance?.updateNotification("Panggilan Dijeda (Manual)")
                 instance?.updateOverlayText()
             }
 
@@ -125,6 +140,8 @@ class AutoCallForegroundService : Service() {
     private var targetName: String = ""
     private var totalTimeoutSeconds: Int = 25
     private var currentCountdown: Int = 25
+    private var callMode: String = CALL_MODE_GSM
+    private var waAudioRecorder: WhatsAppAudioRecorder? = null
 
     private var countdownRunnable: Runnable? = null
     private var isScreenReceiverRegistered = false
@@ -188,17 +205,44 @@ class AutoCallForegroundService : Service() {
                 targetPhoneNumber = intent.getStringExtra(EXTRA_PHONE_NUMBER) ?: ""
                 targetName = intent.getStringExtra(EXTRA_NAME) ?: ""
                 totalTimeoutSeconds = intent.getIntExtra(EXTRA_TIMEOUT_SECONDS, 25)
+                callMode = intent.getStringExtra(EXTRA_CALL_MODE) ?: currentCallMode
+                currentCallMode = callMode
                 currentCountdown = totalTimeoutSeconds
                 activeRemainingSeconds = currentCountdown
                 isTimeoutPaused = false
 
+                if (callMode == CALL_MODE_WHATSAPP) {
+                    try {
+                        waAudioRecorder = WhatsAppAudioRecorder(this)
+                        waAudioRecorder?.startRecording(targetPhoneNumber)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error initiating WhatsAppAudioRecorder: ${e.localizedMessage}")
+                    }
+                }
+
                 try {
                     val notification = buildNotification("Memanggil... Auto-close dalam ${currentCountdown}s")
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        val fgsType = if (callMode == CALL_MODE_WHATSAPP) {
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                        } else {
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+                        }
                         startForeground(
                             NOTIFICATION_ID,
                             notification,
+                            fgsType
+                        )
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        val fgsType = if (callMode == CALL_MODE_WHATSAPP) {
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                        } else {
                             ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+                        }
+                        startForeground(
+                            NOTIFICATION_ID,
+                            notification,
+                            fgsType
                         )
                     } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         startForeground(
@@ -248,6 +292,13 @@ class AutoCallForegroundService : Service() {
         wakeLock = null
     }
 
+    fun onCallAnsweredDetected() {
+        mainHandler.post {
+            updateNotification("Terhubung (Auto-close ${currentCountdown}s)")
+            updateOverlayText()
+        }
+    }
+
     private fun startCountdown() {
         stopCountdown()
         var checkTickCount = 0
@@ -256,29 +307,45 @@ class AutoCallForegroundService : Service() {
                 if (isTimeoutPaused) return
 
                 // 1. Accessibility inspection on active dialer window
-                if (AutoCallAccessibilityService.checkIsCallConnected()) {
-                    Log.i(TAG, "Call answered detected during native countdown tick! Halting auto-hangup timer.")
-                    CallManager.instance?.notifyCallAnswered()
-                    return
-                }
+                if (callMode == CALL_MODE_WHATSAPP) {
+                    if (CallManager.instance?.wasCallAnswered != true && AutoCallAccessibilityService.checkIsCallConnected()) {
+                        Log.i(TAG, "WhatsApp call answered detected during native countdown tick!")
+                        CallManager.instance?.notifyCallAnswered()
+                    }
+                } else {
+                    if (AutoCallAccessibilityService.checkIsCallConnected()) {
+                        Log.i(TAG, "Call answered detected during native countdown tick! Halting auto-hangup timer.")
+                        CallManager.instance?.notifyCallAnswered()
+                        return
+                    }
 
-                // 2. Fallback: Check if OEM Call Recording has started (only created on answered calls)
-                checkTickCount++
-                if (checkTickCount % 2 == 0 && checkIfNewRecordingStarted()) {
-                    Log.i(TAG, "Active call recording file detected! Call is answered! Halting auto-hangup timer.")
-                    CallManager.instance?.notifyCallAnswered()
-                    return
+                    // 2. Fallback: Check if OEM Call Recording has started (only for GSM calls on Vivo/Samsung)
+                    if (callMode == CALL_MODE_GSM) {
+                        checkTickCount++
+                        if (checkTickCount % 2 == 0 && checkIfNewRecordingStarted()) {
+                            Log.i(TAG, "Active GSM call recording file detected! Call is answered! Halting auto-hangup timer.")
+                            CallManager.instance?.notifyCallAnswered()
+                            return
+                        }
+                    }
                 }
 
                 currentCountdown--
                 activeRemainingSeconds = currentCountdown
                 Log.d(TAG, "Native countdown ticking: $currentCountdown seconds remaining.")
 
-                updateNotification("Auto-close dalam ${currentCountdown}s")
+                val isAnswered = CallManager.instance?.wasCallAnswered == true
+                val statusText = if (isAnswered) {
+                    "Terhubung (Auto-close ${currentCountdown}s)"
+                } else {
+                    "Auto-close dalam ${currentCountdown}s"
+                }
+
+                updateNotification(statusText)
                 updateOverlayText()
 
                 if (currentCountdown <= 0) {
-                    Log.i(TAG, "Countdown reached 0 without answer. Triggering automated call termination!")
+                    Log.i(TAG, "Countdown reached 0. Waktu durasi panggilan habis! Triggering automated call termination!")
                     triggerAutoClose()
                 } else {
                     mainHandler.postDelayed(this, 1000L)
@@ -293,6 +360,7 @@ class AutoCallForegroundService : Service() {
      * since the call was initiated. Built-in dialers only record answered calls.
      */
     private fun checkIfNewRecordingStarted(): Boolean {
+        if (callMode != CALL_MODE_GSM) return false
         return try {
             val callStart = CallManager.instance?.callInitiatedTimestamp ?: 0L
             if (callStart <= 0L) return false
@@ -301,6 +369,7 @@ class AutoCallForegroundService : Service() {
                 if (!dir.exists() || !dir.isDirectory) continue
                 val files = dir.listFiles() ?: continue
                 for (file in files) {
+                    if (file.name.startsWith("WA_Call_", ignoreCase = true)) continue
                     if (file.isFile && file.lastModified() >= (callStart - 2000L)) {
                         val name = file.name.lowercase()
                         if (name.endsWith(".m4a") || name.endsWith(".mp3") || name.endsWith(".amr") ||
@@ -334,13 +403,13 @@ class AutoCallForegroundService : Service() {
         CallManager.instance?.endCall()
 
         // 2. Safety cleanup fallback: If for any reason CALL_STATE_IDLE is delayed,
-        // clean up after 5 seconds to avoid leaving a frozen overlay.
+        // clean up after 3.5s for WhatsApp, 5s for GSM
         mainHandler.postDelayed({
             if (isRunning) {
                 Log.i(TAG, "Safety cleanup timer fired after endCall.")
                 cleanUpAndStop()
             }
-        }, 5000L)
+        }, if (callMode == CALL_MODE_WHATSAPP) 3500L else 5000L)
     }
 
     // =================== FLOATING OVERLAY WIDGET ===================
@@ -373,7 +442,7 @@ class AutoCallForegroundService : Service() {
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                y = 120 // 120px from top of screen
+                y = 280 // 280px from top so it sits safely below WhatsApp / dialer header action bar
             }
 
             val overlay = buildOverlayView()
@@ -432,7 +501,8 @@ class AutoCallForegroundService : Service() {
             orientation = LinearLayout.VERTICAL
             val titleView = TextView(this@AutoCallForegroundService).apply {
                 tag = "OVERLAY_TITLE"
-                text = if (targetName.isNotEmpty()) "$targetName ($targetPhoneNumber)" else targetPhoneNumber
+                val prefix = if (callMode == CALL_MODE_WHATSAPP) "💬 WA: " else ""
+                text = if (targetName.isNotEmpty()) "$prefix$targetName ($targetPhoneNumber)" else "$prefix$targetPhoneNumber"
                 setTextColor(Color.WHITE)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -492,11 +562,15 @@ class AutoCallForegroundService : Service() {
         val overlay = floatingOverlayView ?: return
         try {
             val subView = overlay.findViewWithTag<TextView>("OVERLAY_SUB")
+            val isAnswered = CallManager.instance?.wasCallAnswered == true
             if (isTimeoutPaused) {
-                subView?.text = "Terhubung (Sedang Bicara) ✓"
+                subView?.text = "Panggilan Dijeda (Manual) ✓"
+                subView?.setTextColor(Color.parseColor("#38BDF8")) // Sky blue
+            } else if (isAnswered) {
+                subView?.text = "Terhubung (Auto-close ${currentCountdown}s) ✓"
                 subView?.setTextColor(Color.parseColor("#4ADE80")) // Green-400
             } else {
-                subView?.text = "Auto-close dalam ${currentCountdown}s (Tap jika terhubung)"
+                subView?.text = "Auto-close dalam ${currentCountdown}s"
                 subView?.setTextColor(Color.parseColor("#F87171")) // Red-400
             }
         } catch (e: Exception) {
@@ -556,9 +630,10 @@ class AutoCallForegroundService : Service() {
         } else null
 
         val appIcon = applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.sym_action_call
+        val titlePrefix = if (callMode == CALL_MODE_WHATSAPP) "AutoCall WhatsApp: " else "AutoCall: "
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("AutoCall: $targetPhoneNumber ${if (targetName.isNotEmpty()) "($targetName)" else ""}")
+            .setContentTitle("$titlePrefix$targetPhoneNumber ${if (targetName.isNotEmpty()) "($targetName)" else ""}")
             .setContentText(contentText)
             .setSmallIcon(appIcon)
             .setContentIntent(pendingIntent)
@@ -577,6 +652,29 @@ class AutoCallForegroundService : Service() {
     }
 
     private fun cleanUpAndStop() {
+        if (callMode == CALL_MODE_WHATSAPP) {
+            try {
+                val recordedPath = waAudioRecorder?.stopRecording() ?: ""
+                waAudioRecorder = null
+                val answered = isTimeoutPaused || (CallManager.instance?.wasCallAnswered == true)
+                if (!answered) {
+                    // Call was never answered (timed out or hung up while still ringing)
+                    // Discard the recording file so no useless ringing audio is kept or uploaded
+                    try {
+                        if (recordedPath.isNotEmpty()) {
+                            val f = java.io.File(recordedPath)
+                            if (f.exists()) f.delete()
+                        }
+                    } catch (_: Exception) {}
+                    CallManager.instance?.onWhatsAppCallFinished("", wasAnswered = false)
+                } else {
+                    CallManager.instance?.onWhatsAppCallFinished(recordedPath, wasAnswered = true)
+                }
+                CallManager.instance?.bringAppToForeground()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error stopping WhatsApp audio recorder: ${e.localizedMessage}")
+            }
+        }
         if (isScreenReceiverRegistered) {
             try {
                 unregisterReceiver(screenStateReceiver)

@@ -62,6 +62,8 @@ class CallManager(
             add(Manifest.permission.CALL_PHONE)
             add(Manifest.permission.READ_PHONE_STATE)
             add(Manifest.permission.READ_CALL_LOG)
+            add(Manifest.permission.READ_CONTACTS)
+            add(Manifest.permission.RECORD_AUDIO)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 add(Manifest.permission.ANSWER_PHONE_CALLS)
             }
@@ -90,6 +92,8 @@ class CallManager(
     private var wasOffhook: Boolean = false
     var callInitiatedTimestamp: Long = 0L
     private var lastEndCallTimestamp: Long = 0L
+    var callAnsweredTimestamp: Long = 0L
+    var wasCallAnswered: Boolean = false
 
     var backendUploadUrl: String = UploadRecordingWorker.DEFAULT_API_URL
 
@@ -252,11 +256,20 @@ class CallManager(
     }
 
     /**
-     * Initiates an outgoing call using standard Intent.ACTION_CALL,
-     * and starts the native AutoCallForegroundService to manage the countdown
-     * and floating overlay without being frozen by Vivo Funtouch OS.
+     * Initiates an outgoing call using either standard Intent.ACTION_CALL (GSM)
+     * or WhatsApp VoIP call, and starts the native AutoCallForegroundService
+     * to manage the countdown, in-app recorder, and floating overlay.
      */
-    fun startCall(phoneNumber: String, name: String = "", timeoutSeconds: Int = 25): Boolean {
+    fun startCall(
+        phoneNumber: String,
+        name: String = "",
+        timeoutSeconds: Int = 25,
+        callMode: String = "GSM"
+    ): Boolean {
+        if (callMode.equals("WHATSAPP", ignoreCase = true)) {
+            return startWhatsAppCall(phoneNumber, name, timeoutSeconds)
+        }
+
         if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.CALL_PHONE)
             != PackageManager.PERMISSION_GRANTED
         ) {
@@ -268,13 +281,21 @@ class CallManager(
         activeTargetNumber = cleanNumber
         activeTargetName = name.trim()
         callInitiatedTimestamp = System.currentTimeMillis()
+        callAnsweredTimestamp = 0L
+        wasCallAnswered = false
         wasOffhook = false
 
         Log.i(TAG, "Initiating call to $cleanNumber via Intent.ACTION_CALL with timeout $timeoutSeconds s")
 
         return try {
             // Start native Foreground Service with WakeLock & Floating Overlay
-            AutoCallForegroundService.start(appContext, cleanNumber, name, timeoutSeconds)
+            AutoCallForegroundService.start(
+                appContext,
+                cleanNumber,
+                name,
+                timeoutSeconds,
+                AutoCallForegroundService.CALL_MODE_GSM
+            )
 
             val callIntent = Intent(Intent.ACTION_CALL).apply {
                 data = Uri.parse("tel:${Uri.encode(cleanNumber)}")
@@ -286,6 +307,7 @@ class CallManager(
                 mapOf(
                     "event" to "CALL_STARTED",
                     "phoneNumber" to cleanNumber,
+                    "callMode" to "GSM",
                     "timestamp" to callInitiatedTimestamp
                 )
             )
@@ -298,20 +320,289 @@ class CallManager(
     }
 
     /**
+     * Initiates an outgoing WhatsApp VoIP call by launching WhatsApp chat
+     * and signaling AutoCallAccessibilityService to trigger the voice call button.
+     * Records audio concurrently using WhatsAppAudioRecorder.
+     */
+    fun startWhatsAppCall(phoneNumber: String, name: String = "", timeoutSeconds: Int = 25): Boolean {
+        // Pre-dial cleanup: Ensure any previous lingering call is terminated before launching new call!
+        try {
+            if (AutoCallAccessibilityService.isServiceConnected) {
+                AutoCallAccessibilityService.dismissAnyLingeringCall()
+            }
+        } catch (_: Exception) {}
+
+        val cleanNumber = normalizeWhatsAppNumber(phoneNumber)
+        activeTargetNumber = cleanNumber
+        activeTargetName = name.trim()
+        callInitiatedTimestamp = System.currentTimeMillis()
+        callAnsweredTimestamp = 0L
+        wasCallAnswered = false
+        wasOffhook = false
+
+        Log.i(TAG, "Initiating WhatsApp call to $cleanNumber with timeout $timeoutSeconds s")
+
+        return try {
+            // 1. Start native Foreground Service with WakeLock, Overlay, and WhatsApp In-App Recorder
+            AutoCallForegroundService.start(
+                appContext,
+                cleanNumber,
+                name,
+                timeoutSeconds,
+                callMode = AutoCallForegroundService.CALL_MODE_WHATSAPP
+            )
+
+            // 2. Try direct WhatsApp VoIP Call if contact exists in phone contacts
+            val voipDataId = findWhatsAppVoipDataId(cleanNumber)
+            if (voipDataId != null) {
+                Log.i(TAG, "Initiating DIRECT WhatsApp VoIP call via ContactsContract Data ID: $voipDataId")
+                AutoCallAccessibilityService.isWhatsAppPendingCall = false
+                val dataUri = Uri.parse("content://com.android.contacts/data/$voipDataId")
+                val waCallIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(dataUri, "vnd.android.cursor.item/vnd.com.whatsapp.voip.call")
+                    `package` = "com.whatsapp"
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                }
+                appContext.startActivity(waCallIntent)
+            } else {
+                // Fallback for unsaved contacts: Open chat and have Accessibility click voice call button
+                Log.i(TAG, "VoIP data ID not found. Opening WhatsApp chat with accessibility automation fallback.")
+                AutoCallAccessibilityService.isWhatsAppPendingCall = true
+                val waUri = Uri.parse("https://api.whatsapp.com/send?phone=$cleanNumber")
+                val waIntent = Intent(Intent.ACTION_VIEW, waUri).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    if (isPackageInstalled("com.whatsapp")) {
+                        `package` = "com.whatsapp"
+                    } else if (isPackageInstalled("com.whatsapp.w4b")) {
+                        `package` = "com.whatsapp.w4b"
+                    }
+                }
+                appContext.startActivity(waIntent)
+            }
+
+            emitEvent(
+                mapOf(
+                    "event" to "CALL_STARTED",
+                    "phoneNumber" to cleanNumber,
+                    "callMode" to "WHATSAPP",
+                    "timestamp" to callInitiatedTimestamp
+                )
+            )
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to launch WhatsApp call: ${e.localizedMessage}", e)
+            AutoCallAccessibilityService.isWhatsAppPendingCall = false
+            AutoCallForegroundService.stop(appContext)
+            false
+        }
+    }
+
+    private fun findWhatsAppVoipDataId(cleanPhone: String): Long? {
+        return try {
+            if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.READ_CONTACTS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.w(TAG, "READ_CONTACTS permission not granted. Cannot query WhatsApp VoIP data.")
+                return null
+            }
+
+            val resolver = appContext.contentResolver
+            val projection = arrayOf(
+                android.provider.ContactsContract.Data._ID,
+                android.provider.ContactsContract.Data.DATA1,
+                android.provider.ContactsContract.Data.MIMETYPE
+            )
+            val selection = "${android.provider.ContactsContract.Data.MIMETYPE} = ?"
+            val selectionArgs = arrayOf("vnd.android.cursor.item/vnd.com.whatsapp.voip.call")
+
+            val cursor = resolver.query(
+                android.provider.ContactsContract.Data.CONTENT_URI,
+                projection,
+                selection,
+                selectionArgs,
+                null
+            )
+
+            cursor?.use {
+                val idCol = it.getColumnIndex(android.provider.ContactsContract.Data._ID)
+                val dataCol = it.getColumnIndex(android.provider.ContactsContract.Data.DATA1)
+
+                val normalizedTarget = cleanPhone.replace(Regex("[^0-9]"), "")
+                val last7 = if (normalizedTarget.length >= 7) normalizedTarget.substring(normalizedTarget.length - 7) else normalizedTarget
+
+                while (it.moveToNext()) {
+                    val id = it.getLong(idCol)
+                    val data = it.getString(dataCol) ?: ""
+                    val cleanData = data.replace(Regex("[^0-9]"), "")
+                    if (cleanData.isNotEmpty() && (cleanData.endsWith(last7) || normalizedTarget.endsWith(cleanData))) {
+                        Log.i(TAG, "Found WhatsApp VoIP contact data ID: $id for phone $cleanPhone (data: $data)")
+                        return id
+                    }
+                }
+            }
+            null
+        } catch (e: Exception) {
+            Log.w(TAG, "findWhatsAppVoipDataId error: ${e.localizedMessage}")
+            null
+        }
+    }
+
+    private fun normalizeWhatsAppNumber(rawPhone: String): String {
+        var clean = rawPhone.replace(Regex("[^0-9]"), "")
+        if (clean.startsWith("08")) {
+            clean = "628" + clean.substring(2)
+        } else if (clean.startsWith("8")) {
+            clean = "628" + clean.substring(1)
+        } else if (clean.startsWith("0")) {
+            clean = "62" + clean.substring(1)
+        }
+        return clean
+    }
+
+    private fun isPackageInstalled(pkg: String): Boolean {
+        return try {
+            appContext.packageManager.getPackageInfo(pkg, 0)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun onWhatsAppCallFinished(recordingPath: String, wasAnswered: Boolean? = null) {
+        val phone = activeTargetNumber ?: ""
+        val name = activeTargetName ?: ""
+        val start = callInitiatedTimestamp
+        val answeredStart = callAnsweredTimestamp
+
+        // Determine if call was genuinely answered by remote party
+        val isActuallyAnswered = wasAnswered ?: (wasCallAnswered || AutoCallForegroundService.isTimeoutPaused)
+
+        // If answered, duration is conversation time from answeredStart (or start).
+        // If NOT answered (timed out or hung up while ringing), talk duration is strictly 0!
+        val duration = if (isActuallyAnswered) {
+            val baseTime = if (answeredStart > 0L) answeredStart else start
+            if (baseTime > 0L) {
+                ((System.currentTimeMillis() - baseTime) / 1000).toLong().coerceAtLeast(1L)
+            } else 1L
+        } else {
+            0L
+        }
+
+        activeTargetNumber = null
+        activeTargetName = null
+        callInitiatedTimestamp = 0L
+        callAnsweredTimestamp = 0L
+        wasCallAnswered = false
+
+        val isSuccess = isActuallyAnswered && duration > 0
+
+        Log.i(TAG, "WhatsApp call finished. Phone: $phone, wasAnswered: $isActuallyAnswered, Duration: ${duration}s, Recording: $recordingPath")
+
+        emitEvent(
+            mapOf(
+                "event" to "CALL_COMPLETED",
+                "phoneNumber" to phone,
+                "duration" to duration.toInt(),
+                "timestamp" to System.currentTimeMillis(),
+                "callType" to "WHATSAPP",
+                "status" to if (isSuccess) "COMPLETED" else "FAILED_OR_BUSY",
+                "recordingPath" to if (isSuccess) recordingPath else ""
+            )
+        )
+
+        // Schedule WorkManager Upload ONLY if call was genuinely answered and audio exists
+        if (isSuccess && recordingPath.isNotEmpty() && java.io.File(recordingPath).exists()) {
+            enqueueUploadWorker(phone, name, start, duration, "WHATSAPP", recordingPath)
+        }
+
+        // Return to AutoCall app screen
+        bringAppToForeground()
+    }
+
+    /**
+     * Brings the AutoCall Flutter app back to foreground.
+     * Essential after WhatsApp calls finish so user returns to the queue screen.
+     */
+    fun bringAppToForeground() {
+        mainHandler.postDelayed({
+            try {
+                val intent = appContext.packageManager.getLaunchIntentForPackage(appContext.packageName)?.apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
+                if (intent != null) {
+                    if (AutoCallAccessibilityService.isServiceConnected) {
+                        AutoCallAccessibilityService.bringAppToFront(intent)
+                    } else {
+                        appContext.startActivity(intent)
+                    }
+                    Log.i(TAG, "bringAppToForeground: Successfully launched AutoCall main activity.")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "bringAppToForeground failed: ${e.localizedMessage}")
+            }
+        }, 300L)
+    }
+
+    /**
      * Programmatically terminates the active or ringing call.
      * Triggered automatically by the native autocall timer when call timeout expires
      * or when user clicks 'Tutup' on the floating overlay.
      */
     fun endCall(): Boolean {
         val now = System.currentTimeMillis()
-        if (now - lastEndCallTimestamp < 2000L) {
-            Log.i(TAG, "endCall called within 2s debouncing window. Skipping duplicate trigger.")
+        if (now - lastEndCallTimestamp < 800L) {
+            Log.i(TAG, "endCall called within 800ms debouncing window. Skipping duplicate trigger.")
             return true
         }
         lastEndCallTimestamp = now
 
         Log.i(TAG, "Executing endCall to terminate call on timeout...")
         var ended = false
+
+        // Dedicated WhatsApp call termination
+        if (AutoCallForegroundService.currentCallMode == AutoCallForegroundService.CALL_MODE_WHATSAPP) {
+            Log.i(TAG, "Terminating WhatsApp call via accessibility service & TelecomManager...")
+            try {
+                if (AutoCallAccessibilityService.isServiceConnected) {
+                    ended = AutoCallAccessibilityService.endCall()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "AutoCallAccessibilityService WhatsApp endCall error: ${e.localizedMessage}")
+            }
+
+            // Also request TelecomManager to end call if registered
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                try {
+                    val telecomManager = appContext.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+                    if (telecomManager != null && ContextCompat.checkSelfPermission(
+                            appContext,
+                            Manifest.permission.ANSWER_PHONE_CALLS
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        telecomManager.endCall()
+                        Log.i(TAG, "TelecomManager.endCall() executed for WhatsApp VoIP session.")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "TelecomManager.endCall() for WhatsApp: ${e.localizedMessage}")
+                }
+            }
+
+            // CRITICAL: Give AccessibilityService 1500ms to click the red button and retry while WhatsApp is in the foreground,
+            // then stop service (and recorder) and bring AutoCall app back to front!
+            mainHandler.postDelayed({
+                AutoCallForegroundService.stop(appContext)
+                bringAppToForeground()
+            }, 1500L)
+
+            return ended
+        }
 
         // Note: Do NOT stop AutoCallForegroundService here.
         // Keeping the foreground service and CPU WakeLock active ensures that Vivo's Funtouch OS
@@ -381,14 +672,18 @@ class CallManager(
      * Automatically halts the auto-hangup timeout so active conversations are never interrupted.
      */
     fun notifyCallAnswered() {
-        Log.i(TAG, "Remote party answered call! Pausing auto-hangup timer so conversation can proceed.")
-        AutoCallForegroundService.pauseTimeout(appContext)
+        if (wasCallAnswered) return
+        Log.i(TAG, "Remote party answered call! Recording answer timestamp and updating status.")
+        wasCallAnswered = true
+        callAnsweredTimestamp = System.currentTimeMillis()
+
+        AutoCallForegroundService.instance?.onCallAnsweredDetected()
 
         emitEvent(
             mapOf(
                 "event" to "CALL_ANSWERED",
                 "phoneNumber" to (activeTargetNumber ?: ""),
-                "timestamp" to System.currentTimeMillis()
+                "timestamp" to callAnsweredTimestamp
             )
         )
     }

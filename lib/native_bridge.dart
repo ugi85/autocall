@@ -27,12 +27,13 @@ class NativeBridge {
     return _eventsStream!;
   }
 
-  /// Triggers an outgoing phone call directly via native Intent.ACTION_CALL,
-  /// starting native foreground service and floating overlay with specified timeout.
+  /// Triggers an outgoing phone call directly via native Intent.ACTION_CALL (GSM)
+  /// or WhatsApp VoIP call, starting native foreground service and floating overlay.
   Future<bool> startCall(
     String phoneNumber, {
     String name = '',
     int timeoutSeconds = 25,
+    String callMode = 'GSM',
   }) async {
     try {
       final bool? result = await _methodChannel.invokeMethod<bool>(
@@ -41,6 +42,7 @@ class NativeBridge {
           'phoneNumber': phoneNumber,
           'name': name,
           'timeoutSeconds': timeoutSeconds,
+          'callMode': callMode,
         },
       );
       return result ?? false;

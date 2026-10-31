@@ -32,3 +32,6 @@
 
 # Kotlin Coroutines
 -keep class kotlinx.coroutines.** { *; }
+
+# AutoCall native classes (CallManager, Accessibility, Services, Workers)
+-keep class com.autocall.center.autocall_record.** { *; }
