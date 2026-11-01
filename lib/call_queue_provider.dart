@@ -40,6 +40,7 @@ class CallQueueProvider with ChangeNotifier {
   Timer? _callTimeoutTimer;
   bool _isAccessibilityEnabled = false;
   bool _canDrawOverlays = false;
+  bool _isManualCall = false;
 
   // Stored device recordings library (Vivo / Internal Storage)
   List<Map<String, dynamic>> _deviceRecordings = [];
@@ -81,6 +82,7 @@ class CallQueueProvider with ChangeNotifier {
   int get callTimeoutRemaining =>
       (_callTimeoutSeconds - _callSecondsElapsed).clamp(0, _callTimeoutSeconds);
   bool get isCallTimerRunning => _isCallTimerRunning;
+  bool get isManualCall => _isManualCall;
   List<Map<String, dynamic>> get deviceRecordings => _deviceRecordings;
   String get callMode => _callMode;
 
@@ -544,6 +546,7 @@ class CallQueueProvider with ChangeNotifier {
 
     _cancelCallTimeoutTimer();
     _currentProcessingId = null;
+    _isManualCall = false;
 
     // Trigger sequential autocall loop if queue is running
     if (_isQueueRunning && !_isPaused) {
@@ -630,6 +633,7 @@ class CallQueueProvider with ChangeNotifier {
   void stopQueue() {
     _isQueueRunning = false;
     _isPaused = false;
+    _isManualCall = false;
     _currentProcessingId = null;
     _cancelCooldownTimer();
     _cancelCallTimeoutTimer();
@@ -857,6 +861,55 @@ class CallQueueProvider with ChangeNotifier {
         retryCount: item.retryCount + 1,
       );
     });
+  }
+
+  /// Melakukan panggilan manual ke kontak tertentu tanpa memicu timer auto-close (timeout = 0)
+  /// dan tanpa memicu perputaran antrean otomatis.
+  Future<bool> startManualCall(String id, {String? overrideMode}) async {
+    // 1. Jika antrean otomatis sedang aktif, hentikan terlebih dahulu agar tidak saling bertabrakan
+    if (_isQueueRunning) {
+      stopQueue();
+    }
+
+    final targetIndex = _queue.indexWhere((e) => e.id == id);
+    if (targetIndex == -1) return false;
+
+    final targetItem = _queue[targetIndex];
+    _currentProcessingId = targetItem.id;
+    _isManualCall = true;
+    _isCallTimerRunning = false;
+    _cancelCallTimeoutTimer();
+    _cancelCooldownTimer();
+
+    final activeMode = overrideMode ?? _callMode;
+
+    _queue[targetIndex] = targetItem.copyWith(
+      status: CallStatus.dialing,
+      callType: activeMode,
+      callTimestamp: DateTime.now(),
+    );
+    notifyListeners();
+
+    // timeoutSeconds: 0 memberi sinyal kepada native Android untuk menonaktifkan hitung mundur auto-hangup
+    final dialSuccess = await _nativeBridge.startCall(
+      targetItem.phoneNumber,
+      name: targetItem.name,
+      timeoutSeconds: 0,
+      callMode: activeMode,
+    );
+
+    if (!dialSuccess) {
+      _isManualCall = false;
+      _currentProcessingId = null;
+      _queue[targetIndex] = targetItem.copyWith(
+        status: CallStatus.failedOrBusy,
+        uploadMessage: 'Gagal inisialisasi dial panggilan manual',
+      );
+      notifyListeners();
+      return false;
+    }
+
+    return true;
   }
 
   void requeueAllFailed() {

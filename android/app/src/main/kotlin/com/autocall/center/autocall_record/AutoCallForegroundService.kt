@@ -224,7 +224,8 @@ class AutoCallForegroundService : Service() {
                 }
 
                 try {
-                    val notification = buildNotification("Memanggil... Auto-close dalam ${currentCountdown}s")
+                    val notifText = if (totalTimeoutSeconds <= 0) "Panggilan Manual ($callMode)... Bebas bicara" else "Memanggil... Auto-close dalam ${currentCountdown}s"
+                    val notification = buildNotification(notifText)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                         val fgsType = if (callMode == CALL_MODE_WHATSAPP) {
                             ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
@@ -417,6 +418,16 @@ class AutoCallForegroundService : Service() {
                     }
                 }
 
+                // In Manual Call mode (totalTimeoutSeconds <= 0), NEVER countdown or trigger auto-close!
+                if (totalTimeoutSeconds <= 0) {
+                    val isAnswered = CallManager.instance?.wasCallAnswered == true
+                    val manualNotif = if (isAnswered) "Panggilan Manual ($callMode) Terhubung" else "Panggilan Manual ($callMode)... Bebas bicara"
+                    updateNotification(manualNotif)
+                    updateOverlayText()
+                    mainHandler.postDelayed(this, 1000L)
+                    return
+                }
+
                 currentCountdown--
                 activeRemainingSeconds = currentCountdown
                 Log.d(TAG, "Native countdown ticking: $currentCountdown seconds remaining.")
@@ -588,7 +599,12 @@ class AutoCallForegroundService : Service() {
             orientation = LinearLayout.VERTICAL
             val titleView = TextView(this@AutoCallForegroundService).apply {
                 tag = "OVERLAY_TITLE"
-                val prefix = if (callMode == CALL_MODE_WHATSAPP) "💬 WA: " else ""
+                val isManual = totalTimeoutSeconds <= 0
+                val prefix = if (callMode == CALL_MODE_WHATSAPP) {
+                    if (isManual) "💬 WA Manual: " else "💬 WA: "
+                } else {
+                    if (isManual) "📞 GSM Manual: " else ""
+                }
                 text = if (targetName.isNotEmpty()) "$prefix$targetName ($targetPhoneNumber)" else "$prefix$targetPhoneNumber"
                 setTextColor(Color.WHITE)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
@@ -596,8 +612,8 @@ class AutoCallForegroundService : Service() {
             }
             val subView = TextView(this@AutoCallForegroundService).apply {
                 tag = "OVERLAY_SUB"
-                text = "Auto-close dalam ${currentCountdown}s (Tap jika terhubung)"
-                setTextColor(Color.parseColor("#F87171")) // Red-400
+                text = if (totalTimeoutSeconds <= 0) "Mode Manual (Bebas bicara)" else "Auto-close dalam ${currentCountdown}s (Tap jika terhubung)"
+                setTextColor(if (totalTimeoutSeconds <= 0) Color.parseColor("#38BDF8") else Color.parseColor("#F87171"))
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             }
             addView(titleView)
@@ -661,6 +677,9 @@ class AutoCallForegroundService : Service() {
                 val durationStr = String.format("%02d:%02d", elapsedSec / 60, elapsedSec % 60)
                 subView?.text = "Terhubung ($durationStr) ✓"
                 subView?.setTextColor(Color.parseColor("#4ADE80")) // Green-400
+            } else if (totalTimeoutSeconds <= 0) {
+                subView?.text = "Mode Manual (Bebas bicara)"
+                subView?.setTextColor(Color.parseColor("#38BDF8")) // Sky blue
             } else {
                 subView?.text = "Auto-close dalam ${currentCountdown}s"
                 subView?.setTextColor(Color.parseColor("#F87171")) // Red-400

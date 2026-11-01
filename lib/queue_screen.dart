@@ -192,7 +192,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           _buildSyncStatusBar(context, provider),
 
           // 4. Active Call Timeout Banner (Auto Hangup jika tidak angkat/sibuk)
-          if (provider.isCallTimerRunning &&
+          if ((provider.isCallTimerRunning || provider.isManualCall) &&
               provider.currentProcessingId != null)
             _buildCallTimeoutBanner(context, provider),
 
@@ -743,7 +743,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (item.id == provider.currentProcessingId &&
-            provider.isCallTimerRunning)
+            (provider.isCallTimerRunning || provider.isManualCall))
           IconButton(
             icon: const Icon(Icons.call_end, size: 22, color: Colors.red),
             tooltip: 'Tutup Panggilan Sekarang',
@@ -753,22 +753,46 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
             item.status != CallStatus.inCall)
           IconButton(
             icon: const Icon(Icons.phone, size: 20, color: Colors.green),
-            tooltip: 'Panggil Manual',
+            tooltip: 'Panggil Manual (Tanpa Autoclose)',
             onPressed: () {
-              provider.requeueCall(item.id);
-              provider.startQueue();
+              provider.startManualCall(item.id);
             },
           ),
         PopupMenuButton<String>(
           icon: const Icon(Icons.more_vert, size: 18),
           onSelected: (value) {
-            if (value == 'requeue') {
+            if (value == 'call_manual_wa') {
+              provider.startManualCall(item.id, overrideMode: 'WHATSAPP');
+            } else if (value == 'call_manual_gsm') {
+              provider.startManualCall(item.id, overrideMode: 'GSM');
+            } else if (value == 'requeue') {
               provider.requeueCall(item.id);
             } else if (value == 'delete') {
               provider.removeNumber(item.id);
             }
           },
           itemBuilder: (context) => [
+            const PopupMenuItem(
+              value: 'call_manual_wa',
+              child: Row(
+                children: [
+                  Icon(Icons.chat, size: 18, color: Colors.green),
+                  SizedBox(width: 8),
+                  Text('Panggil via WhatsApp'),
+                ],
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'call_manual_gsm',
+              child: Row(
+                children: [
+                  Icon(Icons.phone_in_talk, size: 18, color: Colors.blue),
+                  SizedBox(width: 8),
+                  Text('Panggil via GSM'),
+                ],
+              ),
+            ),
+            const PopupMenuDivider(),
             const PopupMenuItem(
               value: 'requeue',
               child: Row(
@@ -2190,6 +2214,96 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
       (item) => item.id == provider.currentProcessingId,
       orElse: () => provider.queue.first,
     );
+
+    if (provider.isManualCall) {
+      return Container(
+        margin: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.blue.shade50,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.blue.shade300),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  provider.callMode == 'WHATSAPP' ? Icons.chat : Icons.phone_in_talk,
+                  size: 20,
+                  color: Colors.blue.shade700,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: RichText(
+                    text: TextSpan(
+                      style: const TextStyle(fontSize: 13, color: Colors.black87),
+                      children: [
+                        TextSpan(
+                          text: 'Panggilan Manual (${provider.callMode}): ',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: Colors.blue.shade900,
+                          ),
+                        ),
+                        TextSpan(
+                          text:
+                              '${activeItem.name.isNotEmpty ? activeItem.name : activeItem.phoneNumber} (${activeItem.phoneNumber})',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade700,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Text(
+                    'MANUAL',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 11,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Mode Bebas Bicara (Autoclose dinonaktifkan). Tutup telepon secara manual bila sudah selesai.',
+                    style: TextStyle(fontSize: 11, color: Colors.black54),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: Colors.red.shade700,
+                    side: BorderSide(color: Colors.red.shade300),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  icon: const Icon(Icons.call_end, size: 14),
+                  label: const Text(
+                    'Tutup Sekarang',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                  onPressed: () => provider.hangupCurrentCall(),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+    }
+
     final remaining = provider.callTimeoutRemaining;
     final total = provider.callTimeoutSeconds;
     final progress = total > 0 ? (total - remaining) / total : 0.0;
