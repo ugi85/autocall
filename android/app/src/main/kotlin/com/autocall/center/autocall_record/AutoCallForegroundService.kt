@@ -156,6 +156,7 @@ class AutoCallForegroundService : Service() {
                         if (AutoCallAccessibilityService.checkIsCallConnected()) {
                             Log.i(TAG, "Call answered detected upon SCREEN_ON! Halting auto-hangup timer.")
                             CallManager.instance?.notifyCallAnswered()
+                        startWhatsAppRecordingIfConnected()
                         }
                     }, 350L)
                 }
@@ -216,7 +217,7 @@ class AutoCallForegroundService : Service() {
                 if (callMode == CALL_MODE_WHATSAPP) {
                     try {
                         waAudioRecorder = WhatsAppAudioRecorder(this)
-                        waAudioRecorder?.startRecording(targetPhoneNumber)
+                        // Audio recording strictly begins ONLY once call connection is verified (not during dialing/ringing).
                     } catch (e: Exception) {
                         Log.w(TAG, "Error initiating WhatsAppAudioRecorder: ${e.localizedMessage}")
                     }
@@ -294,10 +295,28 @@ class AutoCallForegroundService : Service() {
         wakeLock = null
     }
 
+    fun startWhatsAppRecordingIfConnected() {
+        if (callMode != CALL_MODE_WHATSAPP) return
+        try {
+            if (waAudioRecorder == null) {
+                waAudioRecorder = WhatsAppAudioRecorder(this@AutoCallForegroundService)
+            }
+            if (waAudioRecorder?.isRecording != true) {
+                Log.i(TAG, "Call is answered/connected! Starting WhatsApp two-way audio recording for $targetPhoneNumber")
+                waAudioRecorder?.startRecording(targetPhoneNumber)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start WhatsApp recording upon connection: ${e.localizedMessage}", e)
+        }
+    }
+
     fun onCallAnsweredDetected() {
         mainHandler.post {
             stopCountdown()
             startInCallMonitor()
+            if (callMode == CALL_MODE_WHATSAPP) {
+                startWhatsAppRecordingIfConnected()
+            }
         }
     }
 
@@ -375,12 +394,14 @@ class AutoCallForegroundService : Service() {
                     if (AutoCallAccessibilityService.checkIsCallConnected()) {
                         Log.i(TAG, "WhatsApp call answered detected during native countdown tick! Halting auto-hangup timer.")
                         CallManager.instance?.notifyCallAnswered()
+                        startWhatsAppRecordingIfConnected()
                         return
                     }
                 } else {
                     if (AutoCallAccessibilityService.checkIsCallConnected()) {
                         Log.i(TAG, "Call answered detected during native countdown tick! Halting auto-hangup timer.")
                         CallManager.instance?.notifyCallAnswered()
+                        startWhatsAppRecordingIfConnected()
                         return
                     }
 
@@ -390,6 +411,7 @@ class AutoCallForegroundService : Service() {
                         if (checkTickCount % 2 == 0 && checkIfNewRecordingStarted()) {
                             Log.i(TAG, "Active GSM call recording file detected! Call is answered! Halting auto-hangup timer.")
                             CallManager.instance?.notifyCallAnswered()
+                        startWhatsAppRecordingIfConnected()
                             return
                         }
                     }

@@ -27,6 +27,7 @@
     <!-- Network & Worker Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <!-- Background Execution & Battery Optimization -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />

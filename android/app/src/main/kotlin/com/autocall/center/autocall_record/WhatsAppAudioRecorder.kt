@@ -1,6 +1,7 @@
 package com.autocall.center.autocall_record
 
 import android.content.Context
+import android.media.AudioManager
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Environment
@@ -15,7 +16,8 @@ import java.util.Locale
  *
  * Dedicated in-app audio recorder for WhatsApp VoIP calls.
  * Because OEM dialer recorders (Vivo/Samsung/Xiaomi) only record standard GSM calls,
- * this class captures the audio using MediaRecorder from AudioSource.MIC / VOICE_COMMUNICATION
+ * this class captures the audio using MediaRecorder configured for two-way speech capture
+ * (using loudspeaker routing and AudioSource.VOICE_RECOGNITION / MIC)
  * and saves standard .m4a audio files for upload to Google Drive & Spreadsheet.
  */
 class WhatsAppAudioRecorder(private val context: Context) {
@@ -27,6 +29,9 @@ class WhatsAppAudioRecorder(private val context: Context) {
         var activeRecordingFilePath: String? = null
             private set
     }
+
+    val isRecording: Boolean
+        get() = Companion.isRecording
 
     private var recorder: MediaRecorder? = null
     private var currentOutputFile: File? = null
@@ -49,33 +54,98 @@ class WhatsAppAudioRecorder(private val context: Context) {
             val file = File(targetDir, fileName)
             currentOutputFile = file
 
-            val mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                MediaRecorder(context)
-            } else {
-                @Suppress("DEPRECATION")
-                MediaRecorder()
-            }
+            // Optimize audio routing and speakerphone so remote voice is captured clearly
+            optimizeAudioRoutingForTwoWayCapture()
 
-            mediaRecorder.apply {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                setAudioSamplingRate(44100)
-                setAudioEncodingBitRate(128000)
-                setOutputFile(file.absolutePath)
-                prepare()
-                start()
-            }
-
+            val mediaRecorder = createConfiguredMediaRecorder(file)
             recorder = mediaRecorder
-            isRecording = true
-            activeRecordingFilePath = file.absolutePath
-            Log.i(TAG, "WhatsApp call audio recording started: ${file.absolutePath}")
+            Companion.isRecording = true
+            Companion.activeRecordingFilePath = file.absolutePath
+            Log.i(TAG, "WhatsApp two-way audio recording started: ${file.absolutePath}")
             file.absolutePath
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start WhatsApp call audio recording: ${e.localizedMessage}", e)
             cleanUpRecorder()
             null
+        }
+    }
+
+    /**
+     * Tries best audio sources for two-way call capture:
+     * 1. VOICE_RECOGNITION - Speech capture without aggressive echo suppression cutting remote voice
+     * 2. MIC - Universal standard microphone
+     * 3. DEFAULT - System default fallback
+     */
+    private fun createConfiguredMediaRecorder(file: File): MediaRecorder {
+        val sourcesToTry = listOf(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.MIC,
+            MediaRecorder.AudioSource.DEFAULT
+        )
+
+        var lastException: Exception? = null
+
+        for (source in sourcesToTry) {
+            try {
+                val mr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    MediaRecorder(context)
+                } else {
+                    @Suppress("DEPRECATION")
+                    MediaRecorder()
+                }
+
+                mr.apply {
+                    setAudioSource(source)
+                    setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                    setAudioChannels(1) // Mono for universal hardware compatibility
+                    setAudioSamplingRate(44100)
+                    setAudioEncodingBitRate(128000)
+                    setOutputFile(file.absolutePath)
+                    prepare()
+                    start()
+                }
+
+                Log.i(TAG, "MediaRecorder initialized successfully with AudioSource: $source")
+                return mr
+            } catch (e: Exception) {
+                Log.w(TAG, "MediaRecorder AudioSource $source failed: ${e.localizedMessage}. Trying fallback...")
+                lastException = e
+            }
+        }
+
+        throw lastException ?: IllegalStateException("Unable to initialize MediaRecorder with any AudioSource")
+    }
+
+    /**
+     * Activates speakerphone and optimizes voice call stream volume
+     * so that the other party's voice is played clearly through the loudspeaker
+     * and captured by the microphone together with local speech.
+     */
+    fun optimizeAudioRoutingForTwoWayCapture() {
+        try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+
+            // Activate loudspeaker
+            audioManager.isSpeakerphoneOn = true
+
+            // Set voice call volume to high level (approx 90%)
+            val maxCallVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+            val curCallVol = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+            val targetCallVol = (maxCallVol * 0.90).toInt().coerceAtLeast(1)
+            if (curCallVol < targetCallVol) {
+                audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, targetCallVol, 0)
+            }
+
+            // Also ensure media stream is audible
+            val maxMusicVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val curMusicVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val targetMusicVol = (maxMusicVol * 0.85).toInt().coerceAtLeast(1)
+            if (curMusicVol < targetMusicVol) {
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetMusicVol, 0)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error optimizing audio routing for recording: ${e.localizedMessage}")
         }
     }
 
@@ -112,8 +182,8 @@ class WhatsAppAudioRecorder(private val context: Context) {
             recorder?.release()
         } catch (_: Exception) {}
         recorder = null
-        isRecording = false
-        activeRecordingFilePath = null
+        Companion.isRecording = false
+        Companion.activeRecordingFilePath = null
         currentOutputFile = null
     }
 
@@ -140,4 +210,3 @@ class WhatsAppAudioRecorder(private val context: Context) {
         return context.filesDir
     }
 }
-

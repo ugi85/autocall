@@ -748,21 +748,22 @@ class AutoCallAccessibilityService : AccessibilityService() {
         // - Top toolbar on FHD/FHD+ (height 2000-2400) is within Y 0 and ~350px (screenHeight * 0.15f)
         // - Voice call button is on the right side of toolbar (screenWidth * 0.58f .. 0.94f)
         // - Button size is reasonable (width and height between 24px and 350px)
-        val isInTopBar = rect.top >= 0 && rect.bottom <= (screenHeight * 0.15f) && rect.centerY() > 0
+        val isInTopBar = rect.centerY() in 40..(screenHeight * 0.22f).toInt()
         val isOnRightSide = rect.centerX() > (screenWidth * 0.58f) && rect.centerX() < (screenWidth * 0.94f)
         val hasValidSize = rect.width() in 24..350 && rect.height() in 24..350
 
         if (isInTopBar && isOnRightSide && hasValidSize) {
-            // Strict voice call matches only!
-            val isVoiceCallMatch = desc.contains("panggilan suara") || desc.contains("voice call") ||
-                    desc.contains("panggilan audio") || desc.contains("audio call") ||
-                    desc.contains("telepon suara") ||
-                    viewId.endsWith("menuitem_conversations_voice_call") ||
-                    viewId.endsWith("menuitem_conversations_call") ||
-                    viewId.endsWith("voice_call") ||
+            val isVoiceCallMatch = (
+                desc.contains("panggilan") || desc.contains("call") || desc.contains("telepon") ||
+                text.contains("panggilan") || text.contains("call") || text.contains("telepon")
+            ) && !desc.contains("video") && !text.contains("video") && !viewId.contains("video")
+            val isVoiceCallId = viewId.contains("voice_call") || viewId.contains("action_call") ||
                     (viewId.contains("call") && !viewId.contains("video"))
 
-            if (isVoiceCallMatch) {
+            if (isVoiceCallMatch || isVoiceCallId) {
+                if (node.isClickable) return node
+                val parent = node.parent
+                if (parent != null && parent.isClickable) return parent
                 return node
             }
         }
