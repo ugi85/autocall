@@ -30,12 +30,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
         _showLoginSuccessWelcomeDialog();
       }
       final provider = context.read<CallQueueProvider>();
-      final auth = context.read<AuthProvider>();
-      if (auth.loginApiUrl.isNotEmpty &&
-          provider.contactsApiUrl != auth.loginApiUrl) {
-        provider.setContactsApiUrl(auth.loginApiUrl);
-      }
-      // Tarik data kontak awal dari spreadsheet jika antrean masih kosong
+      // Tarik data kontak awal jika antrean masih kosong
       if (provider.queue.isEmpty) {
         provider.syncContactsSilently();
       }
@@ -147,6 +142,14 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                         color: Colors.black87,
                       ),
                     ),
+                    if (auth.userId.isNotEmpty)
+                      Text(
+                        'ID User: ${auth.userId}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Colors.black54,
+                        ),
+                      ),
                     Text(
                       'Role: ${auth.userRole}',
                       style: const TextStyle(
@@ -1938,9 +1941,6 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     provider.setBackendUrl(uploadUrlController.text.trim());
                     final contactsUrl = contactsUrlController.text.trim();
                     provider.setContactsApiUrl(contactsUrl);
-                    if (contactsUrl.isNotEmpty) {
-                      context.read<AuthProvider>().setLoginApiUrl(contactsUrl);
-                    }
                     Navigator.pop(ctx);
                   },
                   child: const Text('Simpan'),
@@ -2035,7 +2035,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 6),
               Text(
-                'Anda berhasil masuk sebagai ${auth.userRole}. Antrean panggilan siap dijalankan.',
+                auth.userId.isNotEmpty
+                    ? 'ID User: ${auth.userId} • Role: ${auth.userRole}\nAntrean panggilan siap dijalankan.'
+                    : 'Anda berhasil masuk sebagai ${auth.userRole}. Antrean panggilan siap dijalankan.',
                 style: const TextStyle(fontSize: 13),
               ),
             ],

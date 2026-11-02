@@ -5,10 +5,11 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Provider yang mengelola autentikasi pengguna ke Google Apps Script Web App.
+/// Provider yang mengelola autentikasi pengguna ke API Login AutoCall.
 /// Catatan: Sesi login tidak disimpan secara permanen di memori HP sesuai instruksi,
 /// sehingga aplikasi akan selalu meminta login setiap kali dibuka ulang.
 class AuthProvider with ChangeNotifier {
+  static const String defaultLoginApiUrl = 'https://rddonline.my.id/api/login';
   static const String defaultGoogleAppsScriptUrl =
       'https://script.google.com/macros/s/AKfycbw-3o-BK7ANO-lm1Ri39MNqmJHP6wt783U-swYptte_lkqIzNTR789YTfwLqpakjjZc/exec';
 
@@ -19,7 +20,7 @@ class AuthProvider with ChangeNotifier {
   Map<String, dynamic>? _currentUser;
   bool _isLoading = false;
   String? _errorMessage;
-  String _loginApiUrl = defaultGoogleAppsScriptUrl;
+  String _loginApiUrl = defaultLoginApiUrl;
   String _savedUsername = '';
 
   AuthProvider() {
@@ -36,9 +37,17 @@ class AuthProvider with ChangeNotifier {
 
   String get displayName {
     if (_currentUser == null) return '';
-    return _currentUser!['name']?.toString() ??
+    return _currentUser!['nama']?.toString() ??
+        _currentUser!['name']?.toString() ??
         _currentUser!['username']?.toString() ??
         'User';
+  }
+
+  String get userId {
+    if (_currentUser == null) return '';
+    return _currentUser!['id_user']?.toString() ??
+        _currentUser!['id']?.toString() ??
+        '';
   }
 
   String get userRole {
@@ -52,7 +61,15 @@ class AuthProvider with ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       final savedUrl = prefs.getString(_keyLoginApiUrl);
       if (savedUrl != null && savedUrl.trim().isNotEmpty) {
-        _loginApiUrl = savedUrl.trim();
+        // Jika sebelumnya tersimpan URL Apps Script lama, migrasikan ke default URL login baru
+        if (savedUrl.contains('script.google.com')) {
+          _loginApiUrl = defaultLoginApiUrl;
+          await prefs.setString(_keyLoginApiUrl, defaultLoginApiUrl);
+        } else {
+          _loginApiUrl = savedUrl.trim();
+        }
+      } else {
+        _loginApiUrl = defaultLoginApiUrl;
       }
 
       final savedUser = prefs.getString(_keySavedUsername);
@@ -65,7 +82,7 @@ class AuthProvider with ChangeNotifier {
     }
   }
 
-  /// Mengubah URL Google Apps Script untuk login
+  /// Mengubah URL API server untuk login
   Future<void> setLoginApiUrl(String url) async {
     final cleanUrl = url.trim();
     if (cleanUrl.isNotEmpty && cleanUrl.startsWith('http')) {
@@ -88,7 +105,7 @@ class AuthProvider with ChangeNotifier {
     }
   }
 
-  /// Melakukan proses login ke Google Apps Script Web App
+  /// Melakukan proses login ke API Server
   Future<bool> login({
     required String username,
     required String password,
@@ -118,51 +135,95 @@ class AuthProvider with ChangeNotifier {
     notifyListeners();
 
     try {
-      // Menyusun URL dengan query parameters untuk Google Apps Script
       final baseUri = Uri.parse(targetUrl);
-      final queryParams = Map<String, String>.from(baseUri.queryParameters);
-      queryParams['action'] = 'login';
-      queryParams['username'] = cleanUsername;
-      queryParams['password'] = cleanPassword;
+      http.Response response;
 
-      final requestUri = baseUri.replace(queryParameters: queryParams);
+      // Cek apakah target URL adalah Google Apps Script (fallback) atau REST API POST
+      if (targetUrl.contains('script.google.com')) {
+        final queryParams = Map<String, String>.from(baseUri.queryParameters);
+        queryParams['action'] = 'login';
+        queryParams['username'] = cleanUsername;
+        queryParams['password'] = cleanPassword;
+        final requestUri = baseUri.replace(queryParameters: queryParams);
 
-      final response = await http.get(
-        requestUri,
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'AutoCallApp/1.0',
-        },
-      ).timeout(const Duration(seconds: 15));
+        response = await http.get(
+          requestUri,
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'AutoCallApp/1.0',
+          },
+        ).timeout(const Duration(seconds: 15));
+      } else {
+        // Standar API POST (https://rddonline.my.id/api/login)
+        // Menyediakan query params dan form body untuk kompatibilitas penuh dengan server
+        final queryParams = Map<String, String>.from(baseUri.queryParameters);
+        queryParams['username'] = cleanUsername;
+        queryParams['password'] = cleanPassword;
+        final requestUri = baseUri.replace(queryParameters: queryParams);
+
+        response = await http.post(
+          requestUri,
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'AutoCallApp/1.0',
+          },
+          body: {
+            'username': cleanUsername,
+            'password': cleanPassword,
+          },
+        ).timeout(const Duration(seconds: 15));
+      }
 
       if (response.statusCode != 200) {
         throw HttpException(
-          'Server Google Apps Script merespon dengan status HTTP ${response.statusCode}',
+          'Server merespon dengan status HTTP ${response.statusCode}',
         );
       }
 
       final dynamic decoded = jsonDecode(response.body);
 
       if (decoded is Map<String, dynamic>) {
-        final status = (decoded['status'] ?? '').toString().toLowerCase();
-        final isSuccess = decoded['success'] == true ||
+        final status = (decoded['status'] ?? '').toString().toLowerCase().trim();
+        final isSuccess = status == 'ok' ||
             status == 'success' ||
-            status == 'ok' ||
+            decoded['success'] == true ||
             decoded['code'] == 200;
 
         if (isSuccess) {
           _isLoggedIn = true;
-          _currentUser = (decoded['user'] is Map<String, dynamic>)
-              ? Map<String, dynamic>.from(decoded['user'] as Map)
-              : {
-                  'username': cleanUsername,
-                  'name': cleanUsername,
-                  'role': 'Operator',
-                };
+          final dynamic rawUser = decoded['user'];
+          final userMap = (rawUser is Map<String, dynamic>)
+              ? Map<String, dynamic>.from(rawUser)
+              : <String, dynamic>{};
+
+          final resolvedId = decoded['id_user']?.toString() ??
+              userMap['id']?.toString() ??
+              userMap['id_user']?.toString() ??
+              '';
+
+          final resolvedNama = decoded['nama']?.toString() ??
+              userMap['nama']?.toString() ??
+              userMap['name']?.toString() ??
+              cleanUsername;
+
+          final resolvedRole = decoded['role']?.toString() ??
+              userMap['role']?.toString() ??
+              'Operator';
+
+          _currentUser = {
+            'id_user': resolvedId,
+            'id': resolvedId,
+            'nama': resolvedNama,
+            'name': resolvedNama,
+            'username': cleanUsername,
+            'role': resolvedRole,
+            'message': decoded['message']?.toString() ?? 'Sukses',
+            ...userMap,
+          };
           _errorMessage = null;
           _savedUsername = cleanUsername;
 
-          // Simpan username dan URL ke SharedPreferences (hanya username dan URL, sesi login tetap non-persisten)
+          // Simpan username dan URL ke SharedPreferences
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString(_keySavedUsername, _savedUsername);
           if (targetUrl != _loginApiUrl) {
@@ -193,13 +254,13 @@ class AuthProvider with ChangeNotifier {
       return false;
     } on SocketException catch (e) {
       _errorMessage =
-          'Tidak dapat terhubung ke server Google Apps Script (${e.message}). Pastikan jaringan internet aktif.';
+          'Tidak dapat terhubung ke server login (${e.message}). Pastikan jaringan internet aktif.';
       _isLoading = false;
       notifyListeners();
       return false;
     } on FormatException {
       _errorMessage =
-          'Respon dari Google Apps Script tidak valid. Pastikan Web App sudah dideploy dengan hak akses "Anyone" (Siapa saja).';
+          'Respon dari server login tidak valid.';
       _isLoading = false;
       notifyListeners();
       return false;

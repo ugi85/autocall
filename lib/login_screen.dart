@@ -71,11 +71,8 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
 
     if (success) {
-      // Sinkronkan URL kontak & muat kontak jika antrean kosong
+      // Muat kontak jika antrean kosong
       final queueProvider = context.read<CallQueueProvider>();
-      if (auth.loginApiUrl.isNotEmpty && queueProvider.contactsApiUrl != auth.loginApiUrl) {
-        queueProvider.setContactsApiUrl(auth.loginApiUrl);
-      }
       if (queueProvider.queue.isEmpty) {
         queueProvider.syncContactsSilently();
       }
