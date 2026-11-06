@@ -27,9 +27,14 @@ class CallQueueProvider with ChangeNotifier {
   // Backend Upload API & Contacts Fetch API
   static const String defaultGoogleAppsScriptUrl =
       'https://script.google.com/macros/s/AKfycbw-3o-BK7ANO-lm1Ri39MNqmJHP6wt783U-swYptte_lkqIzNTR789YTfwLqpakjjZc/exec';
+  static const String defaultRddGetNoHpUrl = 'https://rddonline.my.id/api/get_no_hp';
 
   String _backendUrl = defaultGoogleAppsScriptUrl;
-  String _contactsApiUrl = defaultGoogleAppsScriptUrl;
+  String _contactsApiUrl = defaultRddGetNoHpUrl;
+  String _operatorUserId = '';
+  String _operatorName = '';
+  static const String _keyOperatorUserId = 'autocall_operator_user_id';
+  static const String _keyOperatorName = 'autocall_operator_name';
   bool _isLoadingContactsFromApi = false;
   DateTime? _lastSyncTime;
 
@@ -75,6 +80,20 @@ class CallQueueProvider with ChangeNotifier {
   String get backendUrl => _backendUrl;
   String get contactsApiUrl => _contactsApiUrl;
   bool get isLoadingContactsFromApi => _isLoadingContactsFromApi;
+  String get operatorUserId => _operatorUserId;
+  String get operatorName => _operatorName;
+
+  void setOperatorInfo({required String userId, String? operatorName}) {
+    final cleanId = userId.trim();
+    if (cleanId.isNotEmpty && (cleanId != _operatorUserId || (operatorName != null && operatorName != _operatorName))) {
+      _operatorUserId = cleanId;
+      if (operatorName != null && operatorName.trim().isNotEmpty) {
+        _operatorName = operatorName.trim();
+      }
+      _saveSettingsToStorage();
+      notifyListeners();
+    }
+  }
   DateTime? get lastSyncTime => _lastSyncTime;
 
   int get callTimeoutSeconds => _callTimeoutSeconds;
@@ -94,12 +113,13 @@ class CallQueueProvider with ChangeNotifier {
     }
   }
 
-  Future<int> syncContactsSilently() async {
+  Future<int> syncContactsSilently({String? userId}) async {
     if (_isLoadingContactsFromApi) return 0;
     try {
       final count = await fetchContactsFromApi(
         clearExisting: false,
         isSilent: true,
+        userId: userId,
       );
       _lastSyncTime = DateTime.now();
       notifyListeners();
@@ -326,37 +346,48 @@ class CallQueueProvider with ChangeNotifier {
         }
       }
 
+      // Load operator info
+      if (prefs.containsKey(_keyOperatorUserId)) {
+        _operatorUserId = prefs.getString(_keyOperatorUserId) ?? '';
+      }
+      if (prefs.containsKey(_keyOperatorName)) {
+        _operatorName = prefs.getString(_keyOperatorName) ?? '';
+      }
+
       // Load contacts API URL
       if (prefs.containsKey(_keyContactsApiUrl)) {
         final savedContactsUrl = prefs.getString(_keyContactsApiUrl);
         if (savedContactsUrl != null && savedContactsUrl.isNotEmpty) {
           final sanitized = sanitizeApiUrl(savedContactsUrl);
           if (sanitized.isNotEmpty && !sanitized.contains('your-api-domain.com')) {
-            _contactsApiUrl = sanitized;
-            if (sanitized != savedContactsUrl) {
+            if (sanitized.contains('script.google.com') || sanitized.contains('/api/login')) {
+              _contactsApiUrl = defaultRddGetNoHpUrl;
+            } else {
+              _contactsApiUrl = sanitized;
+            }
+            if (_contactsApiUrl != savedContactsUrl) {
               _saveSettingsToStorage();
             }
           }
         }
+      } else {
+        _contactsApiUrl = defaultRddGetNoHpUrl;
       }
 
-      // Fallback: jika belum ada URL kontak tersimpan, ambil dari login atau URL bawaan
-      if (_contactsApiUrl.isEmpty) {
-        final savedLoginUrl = prefs.getString('autocall_login_api_url');
-        if (savedLoginUrl != null && savedLoginUrl.isNotEmpty) {
-          _contactsApiUrl = savedLoginUrl;
-        } else {
-          _contactsApiUrl = defaultGoogleAppsScriptUrl;
-        }
+      // Fallback: jika belum ada URL kontak tersimpan, gunakan default RDD Online
+      if (_contactsApiUrl.isEmpty || _contactsApiUrl.contains('/api/login')) {
+        _contactsApiUrl = defaultRddGetNoHpUrl;
       }
 
       // Pastikan backend upload rekaman selalu terhubung ke URL Google Apps Script yang aktif
       if (_backendUrl.contains('your-api-domain.com') ||
           _backendUrl.contains('backend.com') ||
-          _backendUrl.isEmpty) {
-        _backendUrl = _contactsApiUrl;
-        await _nativeBridge.setBackendUrl(_contactsApiUrl);
-        await prefs.setString(_keyBackendUrl, _contactsApiUrl);
+          _backendUrl.isEmpty ||
+          _backendUrl.contains('get_no_hp') ||
+          _backendUrl.contains('/api/login')) {
+        _backendUrl = defaultGoogleAppsScriptUrl;
+        await _nativeBridge.setBackendUrl(defaultGoogleAppsScriptUrl);
+        await prefs.setString(_keyBackendUrl, defaultGoogleAppsScriptUrl);
       }
 
       // Load queue
@@ -406,6 +437,12 @@ class CallQueueProvider with ChangeNotifier {
       await prefs.setString(_keyBackendUrl, _backendUrl);
       await prefs.setString(_keyContactsApiUrl, _contactsApiUrl);
       await prefs.setString(_keyCallMode, _callMode);
+      if (_operatorUserId.isNotEmpty) {
+        await prefs.setString(_keyOperatorUserId, _operatorUserId);
+      }
+      if (_operatorName.isNotEmpty) {
+        await prefs.setString(_keyOperatorName, _operatorName);
+      }
     } catch (e) {
       debugPrint('[CallQueueProvider] Failed to save settings to storage: $e');
     }
@@ -656,6 +693,19 @@ class CallQueueProvider with ChangeNotifier {
     final nextIndex = _queue.indexWhere((e) => e.status == CallStatus.pending);
 
     if (nextIndex == -1) {
+      // Jika antrean lokal habis dan auto-dial masih aktif, coba tarik nomor berikutnya secara otomatis dari RDD Online
+      if (_contactsApiUrl.contains('rddonline') || _contactsApiUrl.contains('get_no_hp')) {
+        try {
+          final added = await fetchContactsFromApi(isSilent: true);
+          if (added > 0 && _isQueueRunning && !_isPaused) {
+            _dialNextPendingCall();
+            return;
+          }
+        } catch (e) {
+          debugPrint('[CallQueueProvider] Auto-fetch next lead error/empty: $e');
+        }
+      }
+
       // Queue exhausted
       _isQueueRunning = false;
       _currentProcessingId = null;
@@ -980,8 +1030,10 @@ class CallQueueProvider with ChangeNotifier {
     final clean = sanitizeApiUrl(url);
     if (clean.isNotEmpty) {
       _contactsApiUrl = clean;
-      _backendUrl = clean;
-      await _nativeBridge.setBackendUrl(clean);
+      if (clean.contains('script.google.com')) {
+        _backendUrl = clean;
+        await _nativeBridge.setBackendUrl(clean);
+      }
       notifyListeners();
       _saveSettingsToStorage();
     }
@@ -1044,20 +1096,42 @@ class CallQueueProvider with ChangeNotifier {
     String? overrideUrl,
     bool clearExisting = false,
     bool isSilent = false,
+    String? userId,
   }) async {
+    final effectiveUserId = (userId != null && userId.trim().isNotEmpty)
+        ? userId.trim()
+        : _operatorUserId.trim();
+
     final rawUrl = overrideUrl?.trim().isNotEmpty == true
         ? overrideUrl!.trim()
         : _contactsApiUrl.trim();
 
-    final targetUrl = sanitizeApiUrl(rawUrl);
+    String targetUrl = sanitizeApiUrl(rawUrl);
 
     if (targetUrl.isEmpty) {
-      throw Exception(
-        'URL API belum diatur. Silakan masukkan URL API kontak di menu Pengaturan aplikasi.',
-      );
+      targetUrl = defaultRddGetNoHpUrl;
     }
 
-    if (targetUrl != _contactsApiUrl) {
+    // Jika URL adalah RDD Online get_no_hp, pastikan endpoint menyertakan user ID dinamis
+    if (targetUrl.contains('rddonline.my.id') || targetUrl.contains('get_no_hp')) {
+      if (targetUrl.contains('{id_user}') || targetUrl.contains('{userId}')) {
+        targetUrl = targetUrl
+            .replaceAll('{id_user}', effectiveUserId)
+            .replaceAll('{userId}', effectiveUserId);
+      } else if (effectiveUserId.isNotEmpty) {
+        final uri = Uri.parse(targetUrl);
+        final segments = List<String>.from(uri.pathSegments);
+        final lastSeg = segments.isNotEmpty ? segments.last : '';
+        final hasNumericId = RegExp(r'^\d+$').hasMatch(lastSeg);
+
+        if (!hasNumericId) {
+          segments.add(effectiveUserId);
+          targetUrl = uri.replace(pathSegments: segments).toString();
+        }
+      }
+    }
+
+    if (targetUrl != _contactsApiUrl && overrideUrl == null) {
       _contactsApiUrl = targetUrl;
       _saveSettingsToStorage();
     }
@@ -1083,6 +1157,16 @@ class CallQueueProvider with ChangeNotifier {
       }
 
       final dynamic decoded = jsonDecode(response.body);
+
+      // Cek status kegagalan / nomor habis dari server
+      if (decoded is Map<String, dynamic>) {
+        final status = (decoded['status'] ?? '').toString().toLowerCase().trim();
+        if (status == 'no') {
+          final message = decoded['message']?.toString() ?? 'No HP tidak tersedia';
+          throw Exception(message);
+        }
+      }
+
       List<dynamic> itemsList = [];
 
       if (decoded is List) {
@@ -1098,6 +1182,12 @@ class CallQueueProvider with ChangeNotifier {
           itemsList = decoded['results'] as List;
         } else if (decoded['items'] is List) {
           itemsList = decoded['items'] as List;
+        } else if (decoded['no_hp'] != null ||
+            decoded['nohp'] != null ||
+            decoded['phone'] != null ||
+            decoded['phonenumber'] != null) {
+          // Format respon lead tunggal dari RDD Online: {"status":"ok","no_hp":"...","message":"Sukses"}
+          itemsList = [decoded];
         }
       }
 
@@ -1143,7 +1233,7 @@ class CallQueueProvider with ChangeNotifier {
         if (phone.isEmpty) continue;
 
         // Flexible name extraction
-        final name = (normalized['name'] ??
+        final rawName = (normalized['name'] ??
                 normalized['nama'] ??
                 normalized['fullname'] ??
                 normalized['customername'] ??
@@ -1153,14 +1243,19 @@ class CallQueueProvider with ChangeNotifier {
             ?.toString()
             .trim() ?? '';
 
+        final name = rawName.isNotEmpty
+            ? rawName
+            : 'Lead #${_queue.length + 1}';
+
         final id = (normalized['no'] ??
                 normalized['id'] ??
+                normalized['iduser'] ??
                 normalized['contactid'] ??
                 normalized['leadid'])
             ?.toString() ??
             DateTime.now().microsecondsSinceEpoch.toString();
 
-        // Deteksi status panggilan dari spreadsheet
+        // Deteksi status panggilan
         final rawStatus =
             (normalized['status'] ?? '').toString().toUpperCase();
         CallStatus parsedStatus = CallStatus.pending;
@@ -1178,7 +1273,7 @@ class CallQueueProvider with ChangeNotifier {
             CallItem(
               id: id,
               phoneNumber: phone,
-              name: name.isNotEmpty ? name : 'Kontak ${_queue.length + 1}',
+              name: name,
               status: parsedStatus,
             ),
           );
@@ -1196,9 +1291,6 @@ class CallQueueProvider with ChangeNotifier {
 
           if (existingIdx != -1) {
             final existing = _queue[existingIdx];
-            // Update nama dan status jika belum aktif dipanggil
-            // PENTING: Jika kontak berstatus pending (misalnya dikembalikan ke antrean oleh user),
-            // JANGAN timpa kembali ke status lama spreadsheet agar tidak "mental"!
             CallStatus updatedStatus = existing.status;
             if (existing.status != CallStatus.dialing &&
                 existing.status != CallStatus.inCall) {
@@ -1212,17 +1304,16 @@ class CallQueueProvider with ChangeNotifier {
             }
 
             _queue[existingIdx] = existing.copyWith(
-              name: name.isNotEmpty ? name : existing.name,
+              name: rawName.isNotEmpty ? rawName : existing.name,
               status: updatedStatus,
             );
-            syncedCount++;
           } else {
-            // Nomor baru dari spreadsheet: tambahkan ke antrean
+            // Nomor baru: tambahkan ke antrean
             _queue.add(
               CallItem(
                 id: id,
                 phoneNumber: phone,
-                name: name.isNotEmpty ? name : 'Kontak ${_queue.length + 1}',
+                name: name,
                 status: parsedStatus,
               ),
             );
@@ -1231,8 +1322,9 @@ class CallQueueProvider with ChangeNotifier {
         }
       }
 
-      // Sinkronkan penghapusan: jika queue sedang diam (idle), bersihkan kontak pending yang sudah dihapus dari sheet
-      if (!_isQueueRunning && !clearExisting && _queue.isNotEmpty) {
+      // Sinkronkan penghapusan hanya jika API mengembalikan tabel daftar kontak lengkap (bukan single lead get_no_hp)
+      final isSingleLeadApi = targetUrl.contains('get_no_hp') || (itemsList.length == 1 && decoded is Map);
+      if (!isSingleLeadApi && !_isQueueRunning && !clearExisting && _queue.isNotEmpty) {
         final incomingPhones = itemsList.map((raw) {
           if (raw is! Map) return '';
           final map = Map<String, dynamic>.from(raw);
@@ -1255,7 +1347,6 @@ class CallQueueProvider with ChangeNotifier {
       _saveQueueToStorage();
       _isLoadingContactsFromApi = false;
       notifyListeners();
-
       return syncedCount;
     } catch (e) {
       _isLoadingContactsFromApi = false;

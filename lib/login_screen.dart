@@ -71,10 +71,16 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
 
     if (success) {
-      // Muat kontak jika antrean kosong
+      // Set info operator ke queue provider & muat kontak awal jika antrean kosong
       final queueProvider = context.read<CallQueueProvider>();
+      if (auth.userId.isNotEmpty) {
+        queueProvider.setOperatorInfo(
+          userId: auth.userId,
+          operatorName: auth.displayName,
+        );
+      }
       if (queueProvider.queue.isEmpty) {
-        queueProvider.syncContactsSilently();
+        queueProvider.syncContactsSilently(userId: auth.userId);
       }
 
       Navigator.of(context).pushReplacement(

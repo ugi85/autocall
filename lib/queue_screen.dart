@@ -30,9 +30,16 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
         _showLoginSuccessWelcomeDialog();
       }
       final provider = context.read<CallQueueProvider>();
+      final auth = context.read<AuthProvider>();
+      if (auth.userId.isNotEmpty) {
+        provider.setOperatorInfo(
+          userId: auth.userId,
+          operatorName: auth.displayName,
+        );
+      }
       // Tarik data kontak awal jika antrean masih kosong
       if (provider.queue.isEmpty) {
-        provider.syncContactsSilently();
+        provider.syncContactsSilently(userId: auth.userId);
       }
     });
   }
@@ -214,7 +221,11 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           Expanded(
             child: RefreshIndicator(
               onRefresh: () async {
-                await provider.fetchContactsFromApi(clearExisting: false);
+                final auth = context.read<AuthProvider>();
+                await provider.fetchContactsFromApi(
+                  clearExisting: false,
+                  userId: auth.userId,
+                );
               },
               child: provider.queue.isEmpty
                   ? _buildEmptyState(context, provider)
@@ -1155,6 +1166,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildEmptyState(BuildContext context, CallQueueProvider provider) {
+    final colorScheme = Theme.of(context).colorScheme;
     if (provider.isLoadingContactsFromApi) {
       return LayoutBuilder(
         builder: (context, constraints) {
@@ -1224,7 +1236,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Data kontak akan muncul otomatis di sini begitu Anda mengisi sheet "Kontak" pada Google Spreadsheet.',
+                      'Tekan tombol di bawah untuk mengambil nomor kontak prospek dari server RDD Online atau masukkan nomor secara manual.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.grey.shade600,
@@ -1238,9 +1250,14 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                       alignment: WrapAlignment.center,
                       children: [
                         ElevatedButton.icon(
-                          onPressed: () => provider.syncContactsSilently(),
-                          icon: const Icon(Icons.sync),
-                          label: const Text('Cek Ulang Spreadsheet'),
+                          onPressed: () =>
+                              _fetchContactsFromApiDirect(context, provider),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: colorScheme.primary,
+                            foregroundColor: colorScheme.onPrimary,
+                          ),
+                          icon: const Icon(Icons.cloud_download),
+                          label: const Text('Ambil Nomor (RDD Online)'),
                         ),
                         OutlinedButton.icon(
                           onPressed: () =>
@@ -2054,25 +2071,13 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
     CallQueueProvider provider,
   ) async {
     final messenger = ScaffoldMessenger.of(context);
+    final auth = context.read<AuthProvider>();
 
-    // Validate if URL is configured in settings
-    if (provider.contactsApiUrl.trim().isEmpty) {
-      messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(
-        SnackBar(
-          content: const Text(
-            'URL API belum diatur. Masukkan URL API database Anda di menu Pengaturan.',
-          ),
-          backgroundColor: Colors.orange.shade800,
-          duration: const Duration(seconds: 5),
-          action: SnackBarAction(
-            label: 'Atur URL',
-            textColor: Colors.white,
-            onPressed: () => _showSettingsDialog(context, provider),
-          ),
-        ),
+    if (auth.userId.isNotEmpty) {
+      provider.setOperatorInfo(
+        userId: auth.userId,
+        operatorName: auth.displayName,
       );
-      return;
     }
 
     messenger.showSnackBar(
@@ -2088,7 +2093,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
               ),
             ),
             SizedBox(width: 12),
-            Text('Menghubungi API database kontak...'),
+            Text('Menghubungi server RDD Online...'),
           ],
         ),
         duration: Duration(seconds: 2),
@@ -2096,22 +2101,39 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
     );
 
     try {
-      final count = await provider.fetchContactsFromApi();
-      messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text('Berhasil mengambil $count kontak dari database!'),
-          backgroundColor: Colors.green,
-          duration: const Duration(seconds: 4),
-        ),
+      final count = await provider.fetchContactsFromApi(
+        userId: auth.userId,
       );
+      messenger.hideCurrentSnackBar();
+      if (count > 0) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(count == 1
+                ? 'Berhasil mengambil 1 nomor baru dari server RDD!'
+                : 'Berhasil mengambil $count kontak dari server!'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      } else {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('Nomor dari server sudah tersedia di daftar antrean.'),
+            backgroundColor: Colors.blue,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
     } catch (e) {
+      final errText = e.toString().replaceAll('Exception: ', '');
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(
         SnackBar(
-          content: Text('Gagal menarik kontak API: $e'),
-          backgroundColor: Colors.red,
-          duration: const Duration(seconds: 5),
+          content: Text('Gagal menarik kontak: $errText'),
+          backgroundColor: errText.toLowerCase().contains('tidak tersedia')
+              ? Colors.orange.shade800
+              : Colors.red,
+          duration: const Duration(seconds: 4),
           action: SnackBarAction(
             label: 'Atur URL',
             textColor: Colors.white,
