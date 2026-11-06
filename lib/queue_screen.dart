@@ -31,10 +31,12 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
       }
       final provider = context.read<CallQueueProvider>();
       final auth = context.read<AuthProvider>();
-      if (auth.userId.isNotEmpty) {
+      final opUserId = auth.userId.isNotEmpty ? auth.userId : auth.displayName;
+      final opName = auth.displayName.isNotEmpty ? auth.displayName : opUserId;
+      if (opUserId.isNotEmpty || opName.isNotEmpty) {
         provider.setOperatorInfo(
-          userId: auth.userId,
-          operatorName: auth.displayName,
+          userId: opUserId,
+          operatorName: opName,
         );
       }
       // Mulai auto-sync timer berkala latar belakang (tiap 15 detik)
@@ -2086,6 +2088,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
             onPressed: () {
               Navigator.pop(ctx);
               context.read<CallQueueProvider>().clearQueue();
+              context.read<CallQueueProvider>().clearOperatorInfo();
               context.read<AuthProvider>().logout();
               Navigator.of(context).pushAndRemoveUntil(
                 MaterialPageRoute(builder: (_) => const LoginScreen()),
@@ -2163,10 +2166,12 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
     final messenger = ScaffoldMessenger.of(context);
     final auth = context.read<AuthProvider>();
 
-    if (auth.userId.isNotEmpty) {
+    final opUserId = auth.userId.isNotEmpty ? auth.userId : auth.displayName;
+    final opName = auth.displayName.isNotEmpty ? auth.displayName : opUserId;
+    if (opUserId.isNotEmpty || opName.isNotEmpty) {
       provider.setOperatorInfo(
-        userId: auth.userId,
-        operatorName: auth.displayName,
+        userId: opUserId,
+        operatorName: opName,
       );
     }
 

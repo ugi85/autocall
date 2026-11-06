@@ -34,6 +34,7 @@ class NativeBridge {
     String name = '',
     int timeoutSeconds = 25,
     String callMode = 'GSM',
+    String operatorName = '',
   }) async {
     try {
       final bool? result = await _methodChannel.invokeMethod<bool>(
@@ -43,6 +44,7 @@ class NativeBridge {
           'name': name,
           'timeoutSeconds': timeoutSeconds,
           'callMode': callMode,
+          'operatorName': operatorName,
         },
       );
       return result ?? false;

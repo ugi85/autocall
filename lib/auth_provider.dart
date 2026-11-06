@@ -39,19 +39,24 @@ class AuthProvider with ChangeNotifier {
 
   String get displayName {
     if (_currentUser == null) return '';
-    return _currentUser!['nama']?.toString() ??
-        _currentUser!['name']?.toString() ??
-        _currentUser!['username']?.toString() ??
-        'User';
+    final name = _currentUser!['name']?.toString().trim();
+    if (name != null && name.isNotEmpty) return name;
+    final nama = _currentUser!['nama']?.toString().trim();
+    if (nama != null && nama.isNotEmpty) return nama;
+    final username = _currentUser!['username']?.toString().trim();
+    if (username != null && username.isNotEmpty) return username;
+    return 'User';
   }
 
   String get userId {
     if (_currentUser == null) return '';
-    final id = _currentUser!['id_user']?.toString() ??
-        _currentUser!['id']?.toString() ??
-        _currentUser!['username']?.toString() ??
-        '';
-    return id.trim();
+    final id = _currentUser!['id_user']?.toString().trim();
+    if (id != null && id.isNotEmpty) return id;
+    final id2 = _currentUser!['id']?.toString().trim();
+    if (id2 != null && id2.isNotEmpty) return id2;
+    final username = _currentUser!['username']?.toString().trim();
+    if (username != null && username.isNotEmpty) return username;
+    return '';
   }
 
   String get userRole {
@@ -202,15 +207,21 @@ class AuthProvider with ChangeNotifier {
               ? Map<String, dynamic>.from(rawUser)
               : <String, dynamic>{};
 
-          final resolvedId = decoded['id_user']?.toString() ??
-              userMap['id']?.toString() ??
-              userMap['id_user']?.toString() ??
-              '';
+          final rawId = (decoded['id_user'] ??
+                  userMap['id'] ??
+                  userMap['id_user'] ??
+                  '')
+              .toString()
+              .trim();
+          final resolvedId = rawId.isNotEmpty ? rawId : cleanUsername;
 
-          final resolvedNama = decoded['nama']?.toString() ??
-              userMap['nama']?.toString() ??
-              userMap['name']?.toString() ??
-              cleanUsername;
+          final rawNama = (decoded['nama'] ??
+                  userMap['name'] ??
+                  userMap['nama'] ??
+                  '')
+              .toString()
+              .trim();
+          final resolvedNama = rawNama.isNotEmpty ? rawNama : cleanUsername;
 
           final resolvedRole = decoded['role']?.toString() ??
               userMap['role']?.toString() ??

@@ -77,12 +77,12 @@ class _LoginScreenState extends State<LoginScreen> {
       if (success) {
         // Set info operator ke queue provider & muat kontak awal jika antrean kosong
         final queueProvider = context.read<CallQueueProvider>();
-        if (auth.userId.isNotEmpty) {
-          queueProvider.setOperatorInfo(
-            userId: auth.userId,
-            operatorName: auth.displayName,
-          );
-        }
+        final opUserId = auth.userId.isNotEmpty ? auth.userId : _usernameController.text.trim();
+        final opName = auth.displayName.isNotEmpty ? auth.displayName : opUserId;
+        queueProvider.setOperatorInfo(
+          userId: opUserId,
+          operatorName: opName,
+        );
 
         // Pastikan queue provider menggunakan endpoint yang sama dengan mode login aktif
         if (auth.isGoogleSpreadsheetMode) {

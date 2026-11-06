@@ -265,10 +265,11 @@ class CallManager(
         phoneNumber: String,
         name: String = "",
         timeoutSeconds: Int = 25,
-        callMode: String = "GSM"
+        callMode: String = "GSM",
+        operatorName: String = ""
     ): Boolean {
         if (callMode.equals("WHATSAPP", ignoreCase = true)) {
-            return startWhatsAppCall(phoneNumber, name, timeoutSeconds)
+            return startWhatsAppCall(phoneNumber, name, timeoutSeconds, operatorName)
         }
 
         if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.CALL_PHONE)
@@ -296,7 +297,8 @@ class CallManager(
                 cleanNumber,
                 name,
                 timeoutSeconds,
-                AutoCallForegroundService.CALL_MODE_GSM
+                AutoCallForegroundService.CALL_MODE_GSM,
+                operatorName
             )
 
             val callIntent = Intent(Intent.ACTION_CALL).apply {
@@ -326,7 +328,12 @@ class CallManager(
      * and signaling AutoCallAccessibilityService to trigger the voice call button.
      * Records audio concurrently using WhatsAppAudioRecorder.
      */
-    fun startWhatsAppCall(phoneNumber: String, name: String = "", timeoutSeconds: Int = 25): Boolean {
+    fun startWhatsAppCall(
+        phoneNumber: String,
+        name: String = "",
+        timeoutSeconds: Int = 25,
+        operatorName: String = ""
+    ): Boolean {
         // Pre-dial cleanup: Ensure any previous lingering call is terminated before launching new call!
         try {
             if (AutoCallAccessibilityService.isServiceConnected) {
@@ -352,7 +359,8 @@ class CallManager(
                 cleanNumber,
                 name,
                 timeoutSeconds,
-                callMode = AutoCallForegroundService.CALL_MODE_WHATSAPP
+                callMode = AutoCallForegroundService.CALL_MODE_WHATSAPP,
+                operatorName = operatorName
             )
 
             // 2. Launch WhatsApp Chat interface for target contact
@@ -848,12 +856,10 @@ class CallManager(
             )
         )
 
-        // If the call connected and had a duration, enqueue upload worker
-        if (duration > 0L) {
-            enqueueUploadWorker(finalNumber, finalName, timestamp, duration, callType, localRecordingPath)
-        } else {
-            Log.i(TAG, "Call duration was 0 (unanswered or busy). Skipping recording upload.")
-        }
+        // Note: Flutter's CallQueueProvider.uploadRecordingManually handles the upload directly
+        // with live progress in the UI and proper operator/call-center tagging.
+        // WorkManager duplicate upload is skipped to prevent duplicate uploads to Google Drive/Spreadsheet.
+        Log.i(TAG, "Call finished. Recording: $localRecordingPath. Flutter CallQueueProvider will handle upload directly.")
 
         // Reset active target
         activeTargetNumber = null

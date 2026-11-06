@@ -37,13 +37,18 @@ class WhatsAppAudioRecorder(private val context: Context) {
     private var currentOutputFile: File? = null
 
     @Synchronized
-    fun startRecording(phoneNumber: String): String? {
+    fun startRecording(phoneNumber: String, callCenterName: String = ""): String? {
         stopRecording()
 
         return try {
             val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
             val cleanPhone = phoneNumber.replace(Regex("[^0-9+]"), "")
-            val fileName = "WA_Call_${cleanPhone}_$timeStamp.m4a"
+            val cleanCC = if (callCenterName.isNotBlank()) {
+                callCenterName.replace(Regex("[^a-zA-Z0-9_-]"), "_") + "_"
+            } else {
+                ""
+            }
+            val fileName = "WA_Call_${cleanCC}${cleanPhone}_$timeStamp.m4a"
 
             // Target directory: Primary shared Recordings/Call or app external storage fallback
             val targetDir = getOutputDirectory()

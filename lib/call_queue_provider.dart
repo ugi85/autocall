@@ -95,14 +95,27 @@ class CallQueueProvider with ChangeNotifier {
 
   void setOperatorInfo({required String userId, String? operatorName}) {
     final cleanId = userId.trim();
-    if (cleanId.isNotEmpty && (cleanId != _operatorUserId || (operatorName != null && operatorName != _operatorName))) {
-      _operatorUserId = cleanId;
-      if (operatorName != null && operatorName.trim().isNotEmpty) {
-        _operatorName = operatorName.trim();
-      }
+    final cleanName = (operatorName != null && operatorName.trim().isNotEmpty)
+        ? operatorName.trim()
+        : (cleanId.isNotEmpty ? cleanId : 'Operator');
+
+    final effectiveId = cleanId.isNotEmpty ? cleanId : cleanName;
+
+    if (effectiveId != _operatorUserId || cleanName != _operatorName) {
+      _operatorUserId = effectiveId;
+      _operatorName = cleanName;
       _saveSettingsToStorage();
       notifyListeners();
+      debugPrint('[CallQueueProvider] Operator info updated: userId=$_operatorUserId, name=$_operatorName');
     }
+  }
+
+  void clearOperatorInfo() {
+    _operatorUserId = '';
+    _operatorName = '';
+    _saveSettingsToStorage();
+    notifyListeners();
+    debugPrint('[CallQueueProvider] Operator info cleared.');
   }
   DateTime? get lastSyncTime => _lastSyncTime;
 
@@ -272,24 +285,40 @@ class CallQueueProvider with ChangeNotifier {
     try {
       final bytes = await file.readAsBytes();
       final base64Audio = base64Encode(bytes);
-      String fileName = file.uri.pathSegments.isNotEmpty
+      final originalName = file.uri.pathSegments.isNotEmpty
           ? file.uri.pathSegments.last
           : 'Call_${item.phoneNumber}_${DateTime.now().millisecondsSinceEpoch}.m4a';
 
-      // Catatan #10: Tambahkan nama Call Center / Operator pada penamaan file rekaman
-      final effectiveOp = _operatorName.isNotEmpty ? _operatorName : (_operatorUserId.isNotEmpty ? _operatorUserId : '');
-      if (effectiveOp.isNotEmpty) {
-        final cleanOp = effectiveOp.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-        if (!fileName.toLowerCase().startsWith(cleanOp.toLowerCase())) {
-          fileName = '${cleanOp}_$fileName';
-        }
-      }
+      // Deteksi jenis panggilan: GSM atau WHATSAPP (Catatan #10)
+      final isWa = (item.callType != null && item.callType!.toUpperCase().contains('WHATSAPP')) ||
+          _callMode == 'WHATSAPP' ||
+          originalName.toUpperCase().contains('WA_');
+      final modeTag = isWa ? 'WA_Call' : 'GSM_Call';
+
+      // Format baku nama file di cloud & lokal:
+      // [NamaCC]_[ModeTag]_[NomorTelepon]_[Waktu].[ext]
+      final effectiveOp = _operatorName.isNotEmpty ? _operatorName : (_operatorUserId.isNotEmpty ? _operatorUserId : 'CC');
+      final cleanOp = effectiveOp.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final cleanPhone = item.phoneNumber.replaceAll(RegExp(r'[^0-9]'), '');
+      final ext = originalName.contains('.') ? originalName.split('.').last : 'm4a';
+      final callTime = item.callTimestamp ?? DateTime.now();
+      final timeStr = "${callTime.year}"
+          "${callTime.month.toString().padLeft(2, '0')}"
+          "${callTime.day.toString().padLeft(2, '0')}_"
+          "${callTime.hour.toString().padLeft(2, '0')}"
+          "${callTime.minute.toString().padLeft(2, '0')}"
+          "${callTime.second.toString().padLeft(2, '0')}";
+
+      final fileName = '${cleanOp}_${modeTag}_${cleanPhone}_$timeStr.$ext';
 
       final payload = jsonEncode({
         'action': 'upload_recording',
         'phone_number': item.phoneNumber,
         'phone': item.phoneNumber,
         'name': item.name,
+        'operator': effectiveOp,
+        'call_center': effectiveOp,
+        'call_type': isWa ? 'WHATSAPP' : 'GSM',
         'status': item.durationSeconds > 0
             ? 'TERHUBUNG (${item.durationSeconds}s)'
             : 'SELESAI',
@@ -765,6 +794,7 @@ class CallQueueProvider with ChangeNotifier {
       name: targetItem.name,
       timeoutSeconds: _callTimeoutSeconds,
       callMode: _callMode,
+      operatorName: _operatorName.isNotEmpty ? _operatorName : _operatorUserId,
     );
 
     if (!dialSuccess) {
@@ -982,6 +1012,7 @@ class CallQueueProvider with ChangeNotifier {
       name: targetItem.name,
       timeoutSeconds: 0,
       callMode: activeMode,
+      operatorName: _operatorName.isNotEmpty ? _operatorName : _operatorUserId,
     );
 
     if (!dialSuccess) {

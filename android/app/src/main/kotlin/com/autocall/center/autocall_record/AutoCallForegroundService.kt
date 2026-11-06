@@ -59,6 +59,7 @@ class AutoCallForegroundService : Service() {
         const val EXTRA_NAME = "EXTRA_NAME"
         const val EXTRA_TIMEOUT_SECONDS = "EXTRA_TIMEOUT_SECONDS"
         const val EXTRA_CALL_MODE = "EXTRA_CALL_MODE"
+        const val EXTRA_OPERATOR_NAME = "EXTRA_OPERATOR_NAME"
 
         const val CALL_MODE_GSM = "GSM"
         const val CALL_MODE_WHATSAPP = "WHATSAPP"
@@ -83,7 +84,8 @@ class AutoCallForegroundService : Service() {
             phoneNumber: String,
             name: String,
             timeoutSeconds: Int,
-            callMode: String = CALL_MODE_GSM
+            callMode: String = CALL_MODE_GSM,
+            operatorName: String = ""
         ) {
             currentCallMode = callMode
             val intent = Intent(context, AutoCallForegroundService::class.java).apply {
@@ -92,6 +94,7 @@ class AutoCallForegroundService : Service() {
                 putExtra(EXTRA_NAME, name)
                 putExtra(EXTRA_TIMEOUT_SECONDS, timeoutSeconds)
                 putExtra(EXTRA_CALL_MODE, callMode)
+                putExtra(EXTRA_OPERATOR_NAME, operatorName)
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -139,6 +142,7 @@ class AutoCallForegroundService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var targetPhoneNumber: String = ""
     private var targetName: String = ""
+    private var operatorName: String = ""
     private var totalTimeoutSeconds: Int = 25
     private var currentCountdown: Int = 25
     private var callMode: String = CALL_MODE_GSM
@@ -207,6 +211,7 @@ class AutoCallForegroundService : Service() {
             ACTION_START -> {
                 targetPhoneNumber = intent.getStringExtra(EXTRA_PHONE_NUMBER) ?: ""
                 targetName = intent.getStringExtra(EXTRA_NAME) ?: ""
+                operatorName = intent.getStringExtra(EXTRA_OPERATOR_NAME) ?: ""
                 totalTimeoutSeconds = intent.getIntExtra(EXTRA_TIMEOUT_SECONDS, 25)
                 callMode = intent.getStringExtra(EXTRA_CALL_MODE) ?: currentCallMode
                 currentCallMode = callMode
@@ -304,7 +309,7 @@ class AutoCallForegroundService : Service() {
             }
             if (waAudioRecorder?.isRecording != true) {
                 Log.i(TAG, "Call is answered/connected! Starting WhatsApp two-way audio recording for $targetPhoneNumber")
-                waAudioRecorder?.startRecording(targetPhoneNumber)
+                waAudioRecorder?.startRecording(targetPhoneNumber, operatorName)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start WhatsApp recording upon connection: ${e.localizedMessage}", e)

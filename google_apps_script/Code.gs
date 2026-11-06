@@ -173,6 +173,7 @@ function handleLogin(username, password) {
   if (statusCol === -1) statusCol = 4;
 
   var inputUser = String(username).trim().toLowerCase();
+  var inputClean = inputUser.replace(/[^a-z0-9]/g, '');
   var inputPass = String(password).trim();
 
   // Cari di data baris (baris 0 adalah header)
@@ -187,7 +188,21 @@ function handleLogin(username, password) {
         ? String(rawStatus).trim()
         : 'active';
 
-    if (rowUser === inputUser) {
+    var rowUserClean = rowUser.replace(/[^a-z0-9]/g, '');
+    var rowNameClean = rowName.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    // Cocokkan username, name, atau kecocokan toleran (misal 'opt1' cocok dengan 'operator1' / 'opt1 CC' / 'cc-opt1')
+    var isUserMatch = (
+      rowUser === inputUser ||
+      rowUserClean === inputClean ||
+      (rowNameClean && (
+        rowNameClean === inputClean ||
+        rowNameClean.indexOf(inputClean) !== -1 ||
+        inputClean.indexOf(rowNameClean) !== -1
+      ))
+    );
+
+    if (isUserMatch) {
       if (rowPass === inputPass) {
         // Cek status keaktifan akun:
         // Hanya akun dengan status 'active' atau 'aktif' yang diizinkan masuk.
@@ -206,9 +221,16 @@ function handleLogin(username, password) {
         return createJsonResponse({
           status: 'success',
           message: 'Login berhasil!',
+          id_user: String(row[userCol]),
+          id: String(row[userCol]),
+          nama: rowName,
+          name: rowName,
           user: {
+            id: String(row[userCol]),
+            id_user: String(row[userCol]),
             username: String(row[userCol]),
             name: rowName,
+            nama: rowName,
             role: rowRole,
             status: rowStatus
           }
@@ -354,9 +376,31 @@ function handleUploadRecording(payload) {
   try {
     var phoneNumber = String(payload.phone_number || payload.phone || '').trim();
     var contactName = String(payload.name || '').trim();
+    var callCenter = String(payload.call_center || payload.callCenter || payload.operator || payload.user || '').trim();
     var duration = payload.call_duration || 0;
     var status = String(payload.status || (duration > 0 ? 'TERHUBUNG (' + duration + 's)' : 'SELESAI')).trim();
-    var fileName = String(payload.file_name || ('Call_' + phoneNumber + '_' + new Date().getTime() + '.m4a')).trim();
+
+    // Catatan #10: Penamaan file rekaman menyertakan nama Call Center / Operator & Tag Mode (GSM vs WA)
+    var callType = String(payload.call_type || payload.callType || '').toUpperCase();
+    var rawFileName = String(payload.file_name || '').trim();
+    var isWa = (callType.indexOf("WHATSAPP") !== -1 || rawFileName.toUpperCase().indexOf("WA_") !== -1);
+    var modeTag = isWa ? "WA_Call" : "GSM_Call";
+    var cleanCC = callCenter.replace(/[^a-zA-Z0-9_-]/g, '_');
+    var cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+
+    // Format baku: [NamaCC]_[ModeTag]_[NomorTelepon]_[Waktu].[ext]
+    var fileName = rawFileName;
+    var ext = 'm4a';
+    if (fileName && fileName.lastIndexOf('.') !== -1) {
+      ext = fileName.substring(fileName.lastIndexOf('.') + 1);
+    }
+
+    if (!fileName || fileName.indexOf('_Call_') === -1) {
+      var ts = Utilities.formatDate(new Date(), "GMT+7", "yyyyMMdd_HHmmss");
+      fileName = (cleanCC ? (cleanCC + '_') : '') + modeTag + '_' + (cleanPhone || 'phone') + '_' + ts + '.' + ext;
+    } else if (cleanCC && !fileName.toLowerCase().startsWith(cleanCC.toLowerCase())) {
+      fileName = cleanCC + '_' + fileName;
+    }
     var audioBase64 = payload.audio_base64;
 
     if (!audioBase64) {
@@ -401,6 +445,7 @@ function handleUploadRecording(payload) {
     var statusCol = -1;
     var recordCol = -1;
     var nameCol = -1;
+    var ccCol = -1;
 
     for (var j = 0; j < headers.length; j++) {
       var h = String(headers[j]).toLowerCase();
@@ -408,6 +453,7 @@ function handleUploadRecording(payload) {
       if (h.includes('status')) statusCol = j + 1;
       if (h.includes('record')) recordCol = j + 1;
       if (h.includes('name') || h.includes('nama')) nameCol = j + 1;
+      if (h.includes('callcenter') || h.includes('cc') || h.includes('operator')) ccCol = j + 1;
     }
 
     // Jika kolom Record belum ada di header, tambahkan otomatis
@@ -443,6 +489,9 @@ function handleUploadRecording(payload) {
         if (isPhoneMatch || isNameMatch) {
           if (statusCol > 0) {
             sheet.getRange(i + 1, statusCol).setValue(status);
+          }
+          if (ccCol > 0 && callCenter) {
+            sheet.getRange(i + 1, ccCol).setValue(callCenter);
           }
           sheet.getRange(i + 1, recordCol).setValue(recordFormula);
           rowMatched = true;
