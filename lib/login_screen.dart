@@ -20,6 +20,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passwordFocusNode = FocusNode();
 
   bool _obscurePassword = true;
+  bool _isProcessingLogin = false;
 
   @override
   void initState() {
@@ -63,31 +64,57 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    final success = await auth.login(
-      username: _usernameController.text,
-      password: _passwordController.text,
-    );
+    setState(() => _isProcessingLogin = true);
 
-    if (!mounted) return;
+    try {
+      final success = await auth.login(
+        username: _usernameController.text,
+        password: _passwordController.text,
+      );
 
-    if (success) {
-      // Set info operator ke queue provider & muat kontak awal jika antrean kosong
-      final queueProvider = context.read<CallQueueProvider>();
-      if (auth.userId.isNotEmpty) {
-        queueProvider.setOperatorInfo(
-          userId: auth.userId,
-          operatorName: auth.displayName,
+      if (!mounted) return;
+
+      if (success) {
+        // Set info operator ke queue provider & muat kontak awal jika antrean kosong
+        final queueProvider = context.read<CallQueueProvider>();
+        if (auth.userId.isNotEmpty) {
+          queueProvider.setOperatorInfo(
+            userId: auth.userId,
+            operatorName: auth.displayName,
+          );
+        }
+
+        // Pastikan queue provider menggunakan endpoint yang sama dengan mode login aktif
+        if (auth.isGoogleSpreadsheetMode) {
+          await queueProvider.setContactsApiUrl(AuthProvider.defaultGoogleAppsScriptUrl);
+          await queueProvider.setBackendUrl(AuthProvider.defaultGoogleAppsScriptUrl);
+        } else {
+          await queueProvider.setContactsApiUrl(CallQueueProvider.defaultRddGetNoHpUrl);
+        }
+
+        // Bersihkan cache kontak lama dan langsung tarik kontak segar untuk akun login ini
+        try {
+          await queueProvider.fetchContactsFromApi(
+            clearExisting: true,
+            isSilent: false,
+            userId: auth.userId,
+          );
+        } catch (e) {
+          debugPrint('[LoginScreen] Error fetching initial contacts: $e');
+        }
+
+        if (!mounted) return;
+
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => const QueueScreen(showLoginSuccessWelcome: true),
+          ),
         );
       }
-      if (queueProvider.queue.isEmpty) {
-        queueProvider.syncContactsSilently(userId: auth.userId);
+    } finally {
+      if (mounted) {
+        setState(() => _isProcessingLogin = false);
       }
-
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => const QueueScreen(showLoginSuccessWelcome: true),
-        ),
-      );
     }
   }
 
@@ -217,7 +244,166 @@ class _LoginScreenState extends State<LoginScreen> {
                                 color: theme.hintColor,
                               ),
                             ),
-                            const SizedBox(height: 20),
+                            const SizedBox(height: 12),
+
+                            // Selector Sumber Database (Spreadsheet vs RDD)
+                            Container(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              padding: const EdgeInsets.all(4),
+                              decoration: BoxDecoration(
+                                color: theme.cardColor.withValues(alpha: 0.5),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: theme.dividerColor.withValues(alpha: 0.25),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: InkWell(
+                                      onTap: () {
+                                        auth.switchToGoogleSpreadsheet();
+                                        final qp = context.read<CallQueueProvider>();
+                                        qp.switchToGoogleSpreadsheet();
+                                        qp.clearQueue();
+                                      },
+                                      borderRadius: BorderRadius.circular(9),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 8,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: auth.isGoogleSpreadsheetMode
+                                              ? colorScheme.primary
+                                              : Colors.transparent,
+                                          borderRadius:
+                                              BorderRadius.circular(9),
+                                        ),
+                                        child: Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
+                                          children: [
+                                            Icon(
+                                              Icons.table_chart_rounded,
+                                              size: 15,
+                                              color: auth.isGoogleSpreadsheetMode
+                                                  ? Colors.white
+                                                  : theme.hintColor,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              'Spreadsheet',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold,
+                                                color: auth
+                                                        .isGoogleSpreadsheetMode
+                                                    ? Colors.white
+                                                    : theme.hintColor,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: InkWell(
+                                      onTap: () {
+                                        auth.switchToRddOnline();
+                                        final qp = context.read<CallQueueProvider>();
+                                        qp.switchToRddOnline();
+                                        qp.clearQueue();
+                                      },
+                                      borderRadius: BorderRadius.circular(9),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 8,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: !auth.isGoogleSpreadsheetMode
+                                              ? colorScheme.primary
+                                              : Colors.transparent,
+                                          borderRadius:
+                                              BorderRadius.circular(9),
+                                        ),
+                                        child: Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
+                                          children: [
+                                            Icon(
+                                              Icons.cloud_queue_rounded,
+                                              size: 15,
+                                              color: !auth.isGoogleSpreadsheetMode
+                                                  ? Colors.white
+                                                  : theme.hintColor,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              'RDD Online',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold,
+                                                color: !auth
+                                                        .isGoogleSpreadsheetMode
+                                                    ? Colors.white
+                                                    : theme.hintColor,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Container(
+                              margin: const EdgeInsets.only(bottom: 16),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: auth.isGoogleSpreadsheetMode
+                                    ? Colors.green.withValues(alpha: 0.1)
+                                    : Colors.blue.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: auth.isGoogleSpreadsheetMode
+                                      ? Colors.green.withValues(alpha: 0.3)
+                                      : Colors.blue.withValues(alpha: 0.3),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    auth.isGoogleSpreadsheetMode
+                                        ? Icons.check_circle_outline
+                                        : Icons.cloud_done_outlined,
+                                    size: 14,
+                                    color: auth.isGoogleSpreadsheetMode
+                                        ? Colors.green.shade700
+                                        : Colors.blue.shade700,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      auth.isGoogleSpreadsheetMode
+                                          ? 'Mode Aktif: Google Spreadsheet ("Daftar Kontak")'
+                                          : 'Mode Aktif: Server Web RDD Online',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: auth.isGoogleSpreadsheetMode
+                                            ? Colors.green.shade800
+                                            : Colors.blue.shade800,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
 
                             // Error Message Banner
                             if (auth.errorMessage != null) ...[
@@ -338,15 +524,31 @@ class _LoginScreenState extends State<LoginScreen> {
                                   ),
                                   elevation: 2,
                                 ),
-                                onPressed: auth.isLoading ? null : _handleLogin,
-                                child: auth.isLoading
-                                    ? const SizedBox(
-                                        width: 22,
-                                        height: 22,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2.5,
-                                          color: Colors.white,
-                                        ),
+                                onPressed: (auth.isLoading || _isProcessingLogin) ? null : _handleLogin,
+                                child: (auth.isLoading || _isProcessingLogin)
+                                    ? Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          const SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2.2,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 10),
+                                          Text(
+                                            auth.isLoading
+                                                ? 'Memverifikasi Akun...'
+                                                : 'Menyiapkan Kontak...',
+                                            style: const TextStyle(
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.w600,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ],
                                       )
                                     : const Row(
                                         mainAxisAlignment:

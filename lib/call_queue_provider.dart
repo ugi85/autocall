@@ -30,7 +30,7 @@ class CallQueueProvider with ChangeNotifier {
   static const String defaultRddGetNoHpUrl = 'https://rddonline.my.id/api/get_no_hp';
 
   String _backendUrl = defaultGoogleAppsScriptUrl;
-  String _contactsApiUrl = defaultRddGetNoHpUrl;
+  String _contactsApiUrl = defaultGoogleAppsScriptUrl;
   String _operatorUserId = '';
   String _operatorName = '';
   static const String _keyOperatorUserId = 'autocall_operator_user_id';
@@ -82,6 +82,16 @@ class CallQueueProvider with ChangeNotifier {
   bool get isLoadingContactsFromApi => _isLoadingContactsFromApi;
   String get operatorUserId => _operatorUserId;
   String get operatorName => _operatorName;
+  bool get isGoogleSpreadsheetMode => _contactsApiUrl.contains('script.google.com');
+
+  Future<void> switchToGoogleSpreadsheet() async {
+    await setContactsApiUrl(defaultGoogleAppsScriptUrl);
+    await setBackendUrl(defaultGoogleAppsScriptUrl);
+  }
+
+  Future<void> switchToRddOnline() async {
+    await setContactsApiUrl(defaultRddGetNoHpUrl);
+  }
 
   void setOperatorInfo({required String userId, String? operatorName}) {
     final cleanId = userId.trim();
@@ -111,6 +121,27 @@ class CallQueueProvider with ChangeNotifier {
       notifyListeners();
       _saveSettingsToStorage();
     }
+  }
+
+  Timer? _autoSyncTimer;
+
+  /// Memulai timer background polling berkala (default tiap 15 detik).
+  /// Memungkinkan aplikasi mendeteksi penambahan, perubahan, atau penghapusan kontak di spreadsheet
+  /// secara otomatis tanpa operator harus menarik layar atau menekan tombol refresh.
+  void startAutoSyncTimer({String? userId, int intervalSeconds = 15}) {
+    _autoSyncTimer?.cancel();
+    _autoSyncTimer = Timer.periodic(Duration(seconds: intervalSeconds), (_) {
+      // Auto-sync hanya jika tidak sedang aktif menelepon dan tidak sedang loading
+      if (!_isQueueRunning && !_isLoadingContactsFromApi && _contactsApiUrl.isNotEmpty) {
+        syncContactsSilently(userId: userId ?? _operatorUserId);
+      }
+    });
+  }
+
+  /// Menghentikan timer background polling
+  void stopAutoSyncTimer() {
+    _autoSyncTimer?.cancel();
+    _autoSyncTimer = null;
   }
 
   Future<int> syncContactsSilently({String? userId}) async {
@@ -241,9 +272,18 @@ class CallQueueProvider with ChangeNotifier {
     try {
       final bytes = await file.readAsBytes();
       final base64Audio = base64Encode(bytes);
-      final fileName = file.uri.pathSegments.isNotEmpty
+      String fileName = file.uri.pathSegments.isNotEmpty
           ? file.uri.pathSegments.last
           : 'Call_${item.phoneNumber}_${DateTime.now().millisecondsSinceEpoch}.m4a';
+
+      // Catatan #10: Tambahkan nama Call Center / Operator pada penamaan file rekaman
+      final effectiveOp = _operatorName.isNotEmpty ? _operatorName : (_operatorUserId.isNotEmpty ? _operatorUserId : '');
+      if (effectiveOp.isNotEmpty) {
+        final cleanOp = effectiveOp.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        if (!fileName.toLowerCase().startsWith(cleanOp.toLowerCase())) {
+          fileName = '${cleanOp}_$fileName';
+        }
+      }
 
       final payload = jsonEncode({
         'action': 'upload_recording',
@@ -360,23 +400,19 @@ class CallQueueProvider with ChangeNotifier {
         if (savedContactsUrl != null && savedContactsUrl.isNotEmpty) {
           final sanitized = sanitizeApiUrl(savedContactsUrl);
           if (sanitized.isNotEmpty && !sanitized.contains('your-api-domain.com')) {
-            if (sanitized.contains('script.google.com') || sanitized.contains('/api/login')) {
-              _contactsApiUrl = defaultRddGetNoHpUrl;
-            } else {
-              _contactsApiUrl = sanitized;
-            }
+            _contactsApiUrl = sanitized;
             if (_contactsApiUrl != savedContactsUrl) {
               _saveSettingsToStorage();
             }
           }
         }
       } else {
-        _contactsApiUrl = defaultRddGetNoHpUrl;
+        _contactsApiUrl = defaultGoogleAppsScriptUrl;
       }
 
-      // Fallback: jika belum ada URL kontak tersimpan, gunakan default RDD Online
+      // Fallback: jika belum ada URL kontak tersimpan, gunakan default Google Spreadsheet
       if (_contactsApiUrl.isEmpty || _contactsApiUrl.contains('/api/login')) {
-        _contactsApiUrl = defaultRddGetNoHpUrl;
+        _contactsApiUrl = defaultGoogleAppsScriptUrl;
       }
 
       // Pastikan backend upload rekaman selalu terhubung ke URL Google Apps Script yang aktif
@@ -693,8 +729,8 @@ class CallQueueProvider with ChangeNotifier {
     final nextIndex = _queue.indexWhere((e) => e.status == CallStatus.pending);
 
     if (nextIndex == -1) {
-      // Jika antrean lokal habis dan auto-dial masih aktif, coba tarik nomor berikutnya secara otomatis dari RDD Online
-      if (_contactsApiUrl.contains('rddonline') || _contactsApiUrl.contains('get_no_hp')) {
+      // Jika antrean lokal habis dan auto-dial masih aktif, coba tarik nomor berikutnya secara otomatis dari server / spreadsheet
+      if (_contactsApiUrl.isNotEmpty) {
         try {
           final added = await fetchContactsFromApi(isSilent: true);
           if (added > 0 && _isQueueRunning && !_isPaused) {
@@ -1337,7 +1373,6 @@ class CallQueueProvider with ChangeNotifier {
         }).where((p) => p.isNotEmpty).toSet();
 
         _queue.removeWhere((item) {
-          if (item.status != CallStatus.pending) return false;
           final clean = item.phoneNumber.replaceAll(RegExp(r'[^0-9]'), '');
           return !incomingPhones.any((p) => p == clean || p.endsWith(clean) || clean.endsWith(p));
         });
@@ -1403,6 +1438,7 @@ class CallQueueProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    stopAutoSyncTimer();
     _cancelCooldownTimer();
     _cancelCallTimeoutTimer();
     _telephonySubscription?.cancel();

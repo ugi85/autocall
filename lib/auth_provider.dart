@@ -9,7 +9,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Catatan: Sesi login tidak disimpan secara permanen di memori HP sesuai instruksi,
 /// sehingga aplikasi akan selalu meminta login setiap kali dibuka ulang.
 class AuthProvider with ChangeNotifier {
-  static const String defaultLoginApiUrl = 'https://rddonline.my.id/api/login';
+  static const String defaultRddLoginUrl = 'https://rddonline.my.id/api/login';
+  static const String defaultLoginApiUrl = defaultRddLoginUrl;
   static const String defaultGoogleAppsScriptUrl =
       'https://script.google.com/macros/s/AKfycbw-3o-BK7ANO-lm1Ri39MNqmJHP6wt783U-swYptte_lkqIzNTR789YTfwLqpakjjZc/exec';
 
@@ -20,7 +21,7 @@ class AuthProvider with ChangeNotifier {
   Map<String, dynamic>? _currentUser;
   bool _isLoading = false;
   String? _errorMessage;
-  String _loginApiUrl = defaultLoginApiUrl;
+  String _loginApiUrl = defaultGoogleAppsScriptUrl;
   String _savedUsername = '';
 
   AuthProvider() {
@@ -34,6 +35,7 @@ class AuthProvider with ChangeNotifier {
   String? get errorMessage => _errorMessage;
   String get loginApiUrl => _loginApiUrl;
   String get savedUsername => _savedUsername;
+  bool get isGoogleSpreadsheetMode => _loginApiUrl.contains('script.google.com');
 
   String get displayName {
     if (_currentUser == null) return '';
@@ -45,9 +47,11 @@ class AuthProvider with ChangeNotifier {
 
   String get userId {
     if (_currentUser == null) return '';
-    return _currentUser!['id_user']?.toString() ??
+    final id = _currentUser!['id_user']?.toString() ??
         _currentUser!['id']?.toString() ??
+        _currentUser!['username']?.toString() ??
         '';
+    return id.trim();
   }
 
   String get userRole {
@@ -61,15 +65,9 @@ class AuthProvider with ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       final savedUrl = prefs.getString(_keyLoginApiUrl);
       if (savedUrl != null && savedUrl.trim().isNotEmpty) {
-        // Jika sebelumnya tersimpan URL Apps Script lama, migrasikan ke default URL login baru
-        if (savedUrl.contains('script.google.com')) {
-          _loginApiUrl = defaultLoginApiUrl;
-          await prefs.setString(_keyLoginApiUrl, defaultLoginApiUrl);
-        } else {
-          _loginApiUrl = savedUrl.trim();
-        }
+        _loginApiUrl = savedUrl.trim();
       } else {
-        _loginApiUrl = defaultLoginApiUrl;
+        _loginApiUrl = defaultGoogleAppsScriptUrl;
       }
 
       final savedUser = prefs.getString(_keySavedUsername);
@@ -80,6 +78,14 @@ class AuthProvider with ChangeNotifier {
     } catch (e) {
       debugPrint('AuthProvider _loadPersistedSettings error: $e');
     }
+  }
+
+  Future<void> switchToGoogleSpreadsheet() async {
+    await setLoginApiUrl(defaultGoogleAppsScriptUrl);
+  }
+
+  Future<void> switchToRddOnline() async {
+    await setLoginApiUrl(defaultRddLoginUrl);
   }
 
   /// Mengubah URL API server untuk login

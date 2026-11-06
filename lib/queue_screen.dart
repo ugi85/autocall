@@ -37,6 +37,9 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
           operatorName: auth.displayName,
         );
       }
+      // Mulai auto-sync timer berkala latar belakang (tiap 15 detik)
+      provider.startAutoSyncTimer(userId: auth.userId);
+
       // Tarik data kontak awal jika antrean masih kosong
       if (provider.queue.isEmpty) {
         provider.syncContactsSilently(userId: auth.userId);
@@ -55,7 +58,10 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       // Re-verify permissions dan accessibility status
-      context.read<CallQueueProvider>().checkPermissions();
+      final provider = context.read<CallQueueProvider>();
+      provider.checkPermissions();
+      // Auto-sync langsung begitu pengguna membuka kembali aplikasi
+      provider.syncContactsSilently(userId: context.read<AuthProvider>().userId);
     }
   }
 
@@ -1227,16 +1233,18 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                       color: Colors.grey.shade400,
                     ),
                     const SizedBox(height: 10),
-                    const Text(
-                      'Belum Ada Kontak di Spreadsheet',
-                      style: TextStyle(
+                    Text(
+                      'Belum Ada Kontak di Antrean',
+                      style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Tekan tombol di bawah untuk mengambil nomor kontak prospek dari server RDD Online atau masukkan nomor secara manual.',
+                      provider.isGoogleSpreadsheetMode
+                          ? 'Tekan tombol di bawah untuk mengambil kontak dari Google Spreadsheet "Daftar Kontak" atau masukkan nomor secara manual.'
+                          : 'Tekan tombol di bawah untuk mengambil nomor kontak prospek dari server RDD Online atau masukkan nomor secara manual.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.grey.shade600,
@@ -1256,8 +1264,12 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                             backgroundColor: colorScheme.primary,
                             foregroundColor: colorScheme.onPrimary,
                           ),
-                          icon: const Icon(Icons.cloud_download),
-                          label: const Text('Ambil Nomor (RDD Online)'),
+                          icon: Icon(provider.isGoogleSpreadsheetMode
+                              ? Icons.table_chart_rounded
+                              : Icons.cloud_download),
+                          label: Text(provider.isGoogleSpreadsheetMode
+                              ? 'Ambil Kontak Spreadsheet'
+                              : 'Ambil Nomor (RDD Online)'),
                         ),
                         OutlinedButton.icon(
                           onPressed: () =>
@@ -1907,6 +1919,77 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 16),
 
+                    // 3. Sumber Database (Spreadsheet vs RDD)
+                    const Text(
+                      'Pilihan Sumber Database Kontak:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              backgroundColor: contactsUrlController.text.contains('script.google.com')
+                                  ? Colors.green.shade50
+                                  : null,
+                              side: BorderSide(
+                                color: contactsUrlController.text.contains('script.google.com')
+                                    ? Colors.green
+                                    : Colors.grey.shade400,
+                              ),
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                contactsUrlController.text = CallQueueProvider.defaultGoogleAppsScriptUrl;
+                                uploadUrlController.text = CallQueueProvider.defaultGoogleAppsScriptUrl;
+                              });
+                            },
+                            icon: const Icon(Icons.table_chart_rounded, size: 16),
+                            label: const Text('Spreadsheet', style: TextStyle(fontSize: 12)),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              backgroundColor: contactsUrlController.text.contains('rddonline')
+                                  ? Colors.blue.shade50
+                                  : null,
+                              side: BorderSide(
+                                color: contactsUrlController.text.contains('rddonline')
+                                    ? Colors.blue
+                                    : Colors.grey.shade400,
+                              ),
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                contactsUrlController.text = CallQueueProvider.defaultRddGetNoHpUrl;
+                              });
+                            },
+                            icon: const Icon(Icons.cloud_queue_rounded, size: 16),
+                            label: const Text('RDD Online', style: TextStyle(fontSize: 12)),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      contactsUrlController.text.contains('script.google.com')
+                          ? 'Aktif: Google Spreadsheet "Daftar Kontak"'
+                          : 'Aktif: Server Web RDD Online (rddonline.my.id)',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: contactsUrlController.text.contains('script.google.com')
+                            ? Colors.green.shade800
+                            : Colors.blue.shade800,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
                     // 3. API Daftar Kontak Database
                     // const Text(
                     //   'URL API Daftar Kontak :',
@@ -1952,13 +2035,19 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                   child: const Text('Batal'),
                 ),
                 ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     provider.setCallTimeoutSeconds(currentTimeout);
                     provider.setCooldownSeconds(currentDelay);
                     provider.setBackendUrl(uploadUrlController.text.trim());
                     final contactsUrl = contactsUrlController.text.trim();
-                    provider.setContactsApiUrl(contactsUrl);
-                    Navigator.pop(ctx);
+                    final urlChanged = contactsUrl != provider.contactsApiUrl;
+                    await provider.setContactsApiUrl(contactsUrl);
+                    if (ctx.mounted) {
+                      Navigator.pop(ctx);
+                    }
+                    if (urlChanged && context.mounted) {
+                      _fetchContactsFromApiDirect(context, provider);
+                    }
                   },
                   child: const Text('Simpan'),
                 ),
@@ -1996,6 +2085,7 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
             ),
             onPressed: () {
               Navigator.pop(ctx);
+              context.read<CallQueueProvider>().clearQueue();
               context.read<AuthProvider>().logout();
               Navigator.of(context).pushAndRemoveUntil(
                 MaterialPageRoute(builder: (_) => const LoginScreen()),
@@ -2080,11 +2170,12 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
       );
     }
 
+    final isSpreadsheet = provider.isGoogleSpreadsheetMode;
     messenger.showSnackBar(
-      const SnackBar(
+      SnackBar(
         content: Row(
           children: [
-            SizedBox(
+            const SizedBox(
               width: 16,
               height: 16,
               child: CircularProgressIndicator(
@@ -2092,11 +2183,13 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
                 color: Colors.white,
               ),
             ),
-            SizedBox(width: 12),
-            Text('Menghubungi server RDD Online...'),
+            const SizedBox(width: 12),
+            Text(isSpreadsheet
+                ? 'Menghubungi Google Spreadsheet...'
+                : 'Menghubungi server RDD Online...'),
           ],
         ),
-        duration: Duration(seconds: 2),
+        duration: const Duration(seconds: 2),
       ),
     );
 
@@ -2109,8 +2202,8 @@ class _QueueScreenState extends State<QueueScreen> with WidgetsBindingObserver {
         messenger.showSnackBar(
           SnackBar(
             content: Text(count == 1
-                ? 'Berhasil mengambil 1 nomor baru dari server RDD!'
-                : 'Berhasil mengambil $count kontak dari server!'),
+                ? 'Berhasil mengambil 1 nomor dari ${isSpreadsheet ? "Google Spreadsheet" : "server RDD"}!'
+                : 'Berhasil mengambil $count kontak dari ${isSpreadsheet ? "Google Spreadsheet" : "server RDD"}!'),
             backgroundColor: Colors.green,
             duration: const Duration(seconds: 4),
           ),
